@@ -58,7 +58,7 @@ public class CustomPlayerItemInHandLayer extends GeoLayerRenderer<CustomPlayerEn
             }
             if (hasHandAnchor(animatedGeoModel, offArm)) {
                 if (SlashBladeCompat.isSlashBladeItem(offhandItem)) {
-                    SlashBladeRenderer.renderRightWaist(animatedGeoModel, poseStack, bufferSource, packedLightIn, offhandItem);
+                    SlashBladeRenderer.renderRightWaist(animatedGeoModel, entity, poseStack, bufferSource, packedLightIn, offhandItem);
                 } else {
                     if (!SWarfareCompat.isGunItem(offhandItem)) {
                         renderItem(animatedGeoModel, entity, offhandItem, getDisplayContext(offArm), offArm, poseStack, bufferSource, packedLightIn, handLocatorProfile);
@@ -180,6 +180,20 @@ public class CustomPlayerItemInHandLayer extends GeoLayerRenderer<CustomPlayerEn
     private void applyFallbackHandTransform(PoseStack poseStack) {
         poseStack.translate(0.0d, -0.0625d, -0.1d);
         poseStack.mulPose(Axis.XP.rotationDegrees(-90.0f));
+    }
+
+    /**
+     * Renders an item at a glTF hand attachment point.  The display context is
+     * deliberately third-person so the normal 3D item model is always used.
+     */
+    public void renderGltfThirdPersonItem(LivingEntity livingEntity, ItemStack itemStack,
+                                          HumanoidArm humanoidArm, PoseStack poseStack,
+                                          MultiBufferSource bufferSource, int packedLight, float partialTick) {
+        if (itemStack == null || itemStack.isEmpty()) {
+            return;
+        }
+        this.itemRenderer.renderItem(livingEntity, itemStack, getDisplayContext(humanoidArm),
+                humanoidArm == HumanoidArm.LEFT, poseStack, bufferSource, packedLight);
     }
 
     private ItemDisplayContext getDisplayContext(HumanoidArm humanoidArm) {

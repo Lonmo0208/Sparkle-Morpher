@@ -189,6 +189,9 @@ public abstract class GeoEntity<T extends Entity> extends AnimatableEntity<T> {
                 this.modelAssembly = this.renderShape.context;
                 this.loaded = this.renderShape.isDefault;
                 onModelLoaded(this.modelAssembly);
+                if (this.modelAssembly.isGltf()) {
+                    return;
+                }
                 initAnimationControllers(getAnimationProcessor(), this.modelAssembly.getExpressionCache().getEvents());
             }
             // No change to modelAssembly → keep existing animation controllers intact
