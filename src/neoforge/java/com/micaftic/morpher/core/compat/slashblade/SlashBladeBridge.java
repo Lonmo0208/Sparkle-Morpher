@@ -6,6 +6,9 @@ import com.micaftic.morpher.client.entity.LivingAnimatable;
 import com.micaftic.morpher.geckolib3.core.builder.ILoopType;
 import com.micaftic.morpher.geckolib3.core.event.predicate.AnimationEvent;
 import com.micaftic.morpher.geckolib3.core.enums.PlayState;
+import com.micaftic.morpher.geckolib3.core.processor.IBone;
+import com.micaftic.morpher.geckolib3.geo.animated.AnimatedGeoModel;
+import com.micaftic.morpher.geckolib3.util.RenderUtils;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
 import mods.flammpfeil.slashblade.capability.slashblade.BladeStateAccess;
@@ -35,6 +38,7 @@ import org.joml.Quaternionf;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -112,24 +116,196 @@ public final class SlashBladeBridge {
         return combo.toString();
     }
 
+    /**
+     * 手持拔刀剑时驱动模型动画联动（第二/第三人称）。
+     * <p>有进行中的连击（combo）时优先播放连击动画（"slashblade:combo_a1" 等）；
+     * 待机/无连击时尝试播放当前状态机动画名加 "slashblade:" 前缀的联动动画
+     * （如状态机 idle → 模型 "slashblade:idle"），模型没有该动画则退回原动画。
+     * 这与官方 YSM 1.20 的行为一致：手持拔刀剑时使用拔刀剑联动待机动作而非默认待机。</p>
+     */
     @Nullable
     public static PlayState handleSlashBladeAnim(LivingEntity livingEntity, AnimationEvent<? extends LivingAnimatable<?>> event, String stateAnimation, ILoopType loopType) {
-        String comboName = getComboAnimationName(livingEntity);
-        if (comboName.isEmpty() || comboName.equals(stateAnimation)) {
+        if (!isSlashBladeItem(livingEntity.getMainHandItem())) {
             return null;
         }
         LivingAnimatable<?> animatable = event.getAnimatable();
-        if (animatable == null || animatable.getAnimation(comboName) == null) {
+        if (animatable == null) {
             return null;
         }
         int formatVersion = animatable.getModelAssembly() != null && animatable.getModelAssembly().getModelData() != null
             ? animatable.getModelAssembly().getModelData().getFormatVersion()
             : 0;
-        return IAnimationPredicate.playAnimationWithValid(event, comboName, ILoopType.EDefaultLoopTypes.PLAY_ONCE, formatVersion);
+
+        // 进行中的连击动画（攻击/挥砍联动）优先。
+        String comboName = getComboAnimationName(livingEntity);
+        if (!comboName.isEmpty() && !comboName.equals(stateAnimation) && animatable.getAnimation(comboName) != null) {
+            return IAnimationPredicate.playAnimationWithValid(event, comboName, ILoopType.EDefaultLoopTypes.PLAY_ONCE, formatVersion);
+        }
+
+        // 待机联动：状态机当前动画名加 "slashblade:" 前缀（slashblade:idle / walk / run ...）。
+        String slashName = "slashblade:" + stateAnimation;
+        if (animatable.getAnimation(slashName) != null) {
+            return IAnimationPredicate.playAnimationWithValid(event, slashName, loopType, formatVersion);
+        }
+
+        // 模型无联动动画时退回状态机原动画。
+        if (animatable.getAnimation(stateAnimation) != null) {
+            return IAnimationPredicate.playAnimationWithValid(event, stateAnimation, loopType, formatVersion);
+        }
+        return null;
     }
 
     public static void registerBindings(CtrlBinding ctrlBinding) {
         ctrlBinding.livingEntityVar("slashblade_animation", ctx -> getComboAnimationName(ctx.entity()));
+    }
+
+    /**
+     * 基于模型骨骼锚点定位的主手拔刀剑渲染（第二/第三人称）。
+     * 官方 MMD 版 {@link #renderMainHandBlade} 使用原版实体坐标硬编码偏移
+     * （translate 1.5 + scale 1.5/12 + bladeholder.pmd hardpoint），在自定义
+     * morph 模型的局部坐标系下会错位。此方法复用 YSM 1.20 原版的骨骼定位方式：
+     * 通过模型 leftWaistBones/bladeBones/sheathBones 精确对齐，自适应任意模型。
+     */
+    public static void renderMainHandBladeOnBones(LivingEntity livingEntity, ItemStack itemStack, float partialTick, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, AnimatedGeoModel model) {
+        if (!isSlashBladeItem(itemStack)) {
+            return;
+        }
+        List<IBone> leftWaistBones = model.leftWaistBones();
+        List<IBone> bladeBones = model.bladeBones();
+        List<IBone> sheathBones = model.sheathBones();
+        if (bladeBones.isEmpty() || sheathBones.isEmpty() || leftWaistBones.isEmpty()) {
+            renderBladeOnWaist(itemStack, livingEntity, poseStack, bufferSource, packedLight, leftWaistBones, partialTick);
+            return;
+        }
+        Optional<ISlashBladeState> stateOptional = BladeStateAccess.of(itemStack);
+        if (stateOptional.isEmpty()) {
+            return;
+        }
+        ISlashBladeState state = stateOptional.get();
+        ResourceLocation textureLocation = state.getTexture().orElse(DefaultResources.resourceDefaultTexture);
+        WavefrontObject obj = BladeModelManager.getInstance().getModel(state.getModel().orElse(DefaultResources.resourceDefaultModel));
+        String partName = state.isBroken() ? "blade_damaged" : "blade";
+
+        IBone lastLeftWaistBone = leftWaistBones.get(leftWaistBones.size() - 1);
+        if (!isBoneHidden(lastLeftWaistBone)) {
+            poseStack.pushPose();
+            RenderUtils.prepMatrixForLocator(poseStack, leftWaistBones);
+            poseStack.translate(0.0d, 0.025d, -0.6d);
+            poseStack.scale(0.01f, 0.01f, 0.01f);
+            poseStack.mulPose(Axis.YP.rotationDegrees(-90.0f));
+            poseStack.mulPose(Axis.ZP.rotationDegrees(180.0f));
+            BladeRenderState.renderOverrided(itemStack, obj, partName, textureLocation, poseStack, bufferSource, packedLight);
+            BladeRenderState.renderOverridedLuminous(itemStack, obj, partName + "_luminous", textureLocation, poseStack, bufferSource, packedLight);
+            BladeRenderState.renderOverrided(itemStack, obj, "sheath", textureLocation, poseStack, bufferSource, packedLight);
+            BladeRenderState.renderOverridedLuminous(itemStack, obj, SHEATH_LUMINOUS, textureLocation, poseStack, bufferSource, packedLight);
+            poseStack.popPose();
+        }
+
+        IBone lastBladeBone = bladeBones.get(bladeBones.size() - 1);
+        if (!isBoneHidden(lastBladeBone)) {
+            poseStack.pushPose();
+            RenderUtils.prepMatrixForLocator(poseStack, bladeBones);
+            poseStack.translate(0.0d, 0.035d, 0.0d);
+            poseStack.scale(0.01f, 0.01f, 0.01f);
+            poseStack.mulPose(Axis.YP.rotationDegrees(-90.0f));
+            poseStack.mulPose(Axis.XP.rotationDegrees(180.0f));
+            BladeRenderState.renderOverrided(itemStack, obj, partName, textureLocation, poseStack, bufferSource, packedLight);
+            BladeRenderState.renderOverridedLuminous(itemStack, obj, partName + "_luminous", textureLocation, poseStack, bufferSource, packedLight);
+            poseStack.popPose();
+        }
+
+        IBone lastSheathBone = sheathBones.get(sheathBones.size() - 1);
+        if (!isBoneHidden(lastSheathBone)) {
+            poseStack.pushPose();
+            RenderUtils.prepMatrixForLocator(poseStack, sheathBones);
+            poseStack.translate(0.0d, 0.025d, -0.6d);
+            poseStack.scale(0.01f, 0.01f, 0.01f);
+            poseStack.mulPose(Axis.YP.rotationDegrees(-90.0f));
+            poseStack.mulPose(Axis.ZP.rotationDegrees(180.0f));
+            BladeRenderState.renderOverrided(itemStack, obj, "sheath", textureLocation, poseStack, bufferSource, packedLight);
+            BladeRenderState.renderOverridedLuminous(itemStack, obj, SHEATH_LUMINOUS, textureLocation, poseStack, bufferSource, packedLight);
+            poseStack.popPose();
+        }
+    }
+
+    /**
+     * 模型缺少专用拔刀剑骨骼时的腰挂 fallback（绑定 leftWaist 或硬编码腰位）。
+     */
+    private static void renderBladeOnWaist(ItemStack itemStack, LivingEntity livingEntity, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, List<IBone> leftWaistBones, float partialTick) {
+        poseStack.pushPose();
+        if (leftWaistBones != null && !leftWaistBones.isEmpty()) {
+            RenderUtils.prepMatrixForLocator(poseStack, leftWaistBones);
+        } else {
+            poseStack.translate(-0.25d, 1.25d, 0.0d);
+            poseStack.mulPose(Axis.XP.rotationDegrees(20.0f));
+        }
+        poseStack.translate(0.0d, 0.0d, -0.7d);
+        poseStack.scale(0.01f, 0.01f, 0.01f);
+        poseStack.mulPose(Axis.YP.rotationDegrees(-90.0f));
+        poseStack.mulPose(Axis.ZP.rotationDegrees(180.0f));
+
+        Optional<ISlashBladeState> stateOptional = BladeStateAccess.of(itemStack);
+        if (stateOptional.isEmpty()) {
+            poseStack.popPose();
+            return;
+        }
+        ISlashBladeState state = stateOptional.get();
+        ResourceLocation textureLocation = state.getTexture().orElse(DefaultResources.resourceDefaultTexture);
+        WavefrontObject obj = BladeModelManager.getInstance().getModel(state.getModel().orElse(DefaultResources.resourceDefaultModel));
+
+        BladeRenderState.renderOverrided(itemStack, obj, "sheath", textureLocation, poseStack, bufferSource, packedLight);
+        BladeRenderState.renderOverridedLuminous(itemStack, obj, SHEATH_LUMINOUS, textureLocation, poseStack, bufferSource, packedLight);
+
+        long timeSinceLastAction = livingEntity.level().getGameTime() - state.getLastActionTime();
+        if (timeSinceLastAction < 5) {
+            poseStack.translate(0.0d, 0.0d, -71.42857142857143d);
+            poseStack.mulPose(Axis.YP.rotationDegrees(60.0f + ((timeSinceLastAction + partialTick) * 48.0f)));
+            poseStack.mulPose(Axis.XP.rotationDegrees(90.0f));
+        }
+        String partName = state.isBroken() ? "blade_damaged" : "blade";
+        BladeRenderState.renderOverrided(itemStack, obj, partName, textureLocation, poseStack, bufferSource, packedLight);
+        BladeRenderState.renderOverridedLuminous(itemStack, obj, partName + "_luminous", textureLocation, poseStack, bufferSource, packedLight);
+        poseStack.popPose();
+    }
+
+    /**
+     * 基于模型骨骼锚点的副手拔刀剑渲染（绑 rightWaist）。
+     */
+    public static void renderWaistBladeOnBones(ItemStack itemStack, LivingEntity livingEntity, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, AnimatedGeoModel model) {
+        if (!isSlashBladeItem(itemStack)) {
+            return;
+        }
+        poseStack.pushPose();
+        if (model.rightWaistBones() != null && !model.rightWaistBones().isEmpty()) {
+            RenderUtils.prepMatrixForLocator(poseStack, model.rightWaistBones());
+        } else {
+            poseStack.translate(0.25d, 1.25d, 0.0d);
+            poseStack.mulPose(Axis.XP.rotationDegrees(5.0f));
+        }
+        poseStack.translate(0.0d, 0.0d, -0.7d);
+        poseStack.scale(0.01f, 0.01f, 0.01f);
+        poseStack.mulPose(Axis.YP.rotationDegrees(-90.0f));
+        poseStack.mulPose(Axis.ZP.rotationDegrees(180.0f));
+
+        Optional<ISlashBladeState> stateOptional = BladeStateAccess.of(itemStack);
+        if (stateOptional.isEmpty()) {
+            poseStack.popPose();
+            return;
+        }
+        ISlashBladeState state = stateOptional.get();
+        ResourceLocation textureLocation = state.getTexture().orElse(DefaultResources.resourceDefaultTexture);
+        WavefrontObject obj = BladeModelManager.getInstance().getModel(state.getModel().orElse(DefaultResources.resourceDefaultModel));
+        String partName = state.isBroken() ? "blade_damaged" : "blade";
+
+        BladeRenderState.renderOverrided(itemStack, obj, partName, textureLocation, poseStack, bufferSource, packedLight);
+        BladeRenderState.renderOverridedLuminous(itemStack, obj, partName + "_luminous", textureLocation, poseStack, bufferSource, packedLight);
+        BladeRenderState.renderOverrided(itemStack, obj, "sheath", textureLocation, poseStack, bufferSource, packedLight);
+        BladeRenderState.renderOverridedLuminous(itemStack, obj, SHEATH_LUMINOUS, textureLocation, poseStack, bufferSource, packedLight);
+        poseStack.popPose();
+    }
+
+    private static boolean isBoneHidden(IBone bone) {
+        return bone == null || (bone.getScaleX() == 0.0f && bone.getScaleY() == 0.0f && bone.getScaleZ() == 0.0f);
     }
 
     public static void renderMainHandBlade(LivingEntity livingEntity, ItemStack itemStack, float partialTick, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight) {

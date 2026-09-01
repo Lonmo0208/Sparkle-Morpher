@@ -49,8 +49,8 @@ import org.gagravarr.opus.OpusFile;
 import org.gagravarr.vorbis.VorbisFile;
 import org.joml.Vector2f;
 import org.joml.Vector3f;
-import com.micaftic.morpher.core.imagestream.webp.WebpDecoder;
 import rip.ysm.imagestream.avif.AvifDecoder;
+import rip.ysm.imagestream.webp.WebpDecoder;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;

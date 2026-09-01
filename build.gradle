@@ -89,9 +89,10 @@ dependencies {
     compileOnly "maven.modrinth:OypNE65K:wPvGWIj9"
     // Optional at runtime. SlashBlade Resharped 重锋 (1.21.1 NeoForge).
     compileOnly files("libs/slashblade-resharped.jar")
-    // WebP + AVIF ImageIO decoders (pure-Java SPI plugins, bundled via jarJar)
-    implementation "com.github.gotson:webp-imageio:0.1.2"
-    jarJar "com.github.gotson:webp-imageio:0.1.2"
+    // WebP + AVIF ImageIO decoders (pure-Java SPI plugins, bundled via jarJar).
+    // The local jar has Automatic-Module-Name: rip.ysm.imagestream so jarJar can embed it.
+    implementation files("libs/ImageStream--SNAPSHOT.jar")
+    jarJar files("libs/ImageStream--SNAPSHOT.jar")
 
     // R0: JVM 单测（JUnit 5），测试代码在 src/test/java。
     // moddev 将 MC 依赖链剥离出 test 运行时：neoforge + minecraft-dependencies（gson/joml/fastutil 等库）
