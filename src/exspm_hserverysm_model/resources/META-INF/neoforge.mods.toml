@@ -1,0 +1,36 @@
+modLoader = "javafml"
+loaderVersion = "${loader_version_range}"
+license = "MIT"
+
+[[mods]]
+modId = "exspm_hserverysm_model"
+version = "${version}"
+displayName = "ExSPM-HServerYSM-Model"
+description='''
+Server-only companion mod for Sparkle's Morpher.
+Receives model files uploaded by SPM clients and stores them into the official
+Yes Steve Model custom model folder (config/yes_steve_model/custom), then
+best-effort triggers a YSM model reload.
+Only install this on the dedicated server, alongside the official YSM mod.
+'''
+
+[[dependencies.exspm_hserverysm_model]]
+modId = "neoforge"
+type = "required"
+versionRange = "${neoforge_version_range}"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.exspm_hserverysm_model]]
+modId = "minecraft"
+type = "required"
+versionRange = "${mc_version}"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.exspm_hserverysm_model]]
+modId = "yes_steve_model"
+type = "optional"
+versionRange = "[0,)"
+ordering = "AFTER"
+side = "SERVER"

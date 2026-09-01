@@ -27,6 +27,7 @@ public final class ModelUploadSession {
     private final byte[] data;
     private final String sha256;
     private final boolean syncSelectionOnComplete;
+    private final ModelUploadTransport sessionTransport;
     private volatile State state = State.STARTING;
     private volatile long uploadId = 0L;
     private volatile int chunkSize = 32_000;
@@ -34,12 +35,13 @@ public final class ModelUploadSession {
     private volatile int nextOffset = 0;
     private volatile Component message = Component.empty();
 
-    private ModelUploadSession(String modelId, String fileName, byte[] data, boolean syncSelectionOnComplete) {
+    private ModelUploadSession(String modelId, String fileName, byte[] data, boolean syncSelectionOnComplete, ModelUploadTransport transport) {
         this.modelId = modelId;
         this.fileName = fileName;
         this.data = data;
         this.sha256 = DigestUtil.sha256Hex(data);
         this.syncSelectionOnComplete = syncSelectionOnComplete;
+        this.sessionTransport = transport;
     }
 
     public static ModelUploadSession getInstance() {
@@ -61,10 +63,14 @@ public final class ModelUploadSession {
         if (data.length == 0) {
             return Component.translatable("gui.sparkle_morpher.import.error.empty_file");
         }
-        if (!NetworkHandler.isClientConnected() || !ClientModelManager.isOysmServer()) {
+        if (!NetworkHandler.isClientConnected()) {
             return Component.translatable("gui.sparkle_morpher.import.error.waiting_handshake");
         }
-        if (!ClientModelManager.isAllowUpload()) {
+        boolean uploadChannel = YsmUploadClientBridge.isChannelAvailable();
+        if (!uploadChannel && !ClientModelManager.isOysmServer()) {
+            return Component.translatable("gui.sparkle_morpher.import.error.waiting_handshake");
+        }
+        if (!uploadChannel && !ClientModelManager.isAllowUpload()) {
             return Component.translatable("gui.sparkle_morpher.import.error.disabled_by_server");
         }
         if (serverLimitsKnown && data.length > lastMaxTotalBytes) {
@@ -80,16 +86,25 @@ public final class ModelUploadSession {
         if (kind == ImportKind.ZIP && !isZipFile(data)) {
             return Component.translatable("gui.sparkle_morpher.import.error.invalid_zip");
         }
-        ModelUploadSession session = new ModelUploadSession(modelId, fileName, data, syncSelectionOnComplete);
+        ModelUploadTransport activeTransport = chooseTransport();
+        ModelUploadSession session = new ModelUploadSession(modelId, fileName, data, syncSelectionOnComplete, activeTransport);
         instance = session;
         notifyListeners();
-        transport.sendStart(modelId, fileName == null ? "" : fileName, data.length, session.sha256);
+        activeTransport.sendStart(modelId, fileName == null ? "" : fileName, data.length, session.sha256);
         return null;
     }
 
     /** 切换上传传输实现；默认值由 legacy-compat 边界提供。 */
     public static void setTransport(ModelUploadTransport transport) {
         ModelUploadSession.transport = transport;
+    }
+
+    /** 选择上传通道：服务端协商了 exspm_hserverysm_model 独立频道时优先走独立服务端模组。 */
+    private static ModelUploadTransport chooseTransport() {
+        if (YsmUploadClientBridge.isChannelAvailable()) {
+            return YsmUploadTransport.INSTANCE;
+        }
+        return transport;
     }
 
     public static boolean hasServerLimits() {
@@ -269,7 +284,7 @@ public final class ModelUploadSession {
         for (int i = 0; i < budget && nextOffset < data.length; i++) {
             int end = Math.min(nextOffset + chunkSize, data.length);
             int length = end - nextOffset;
-            transport.sendChunk(uploadId, nextOffset, data, nextOffset, length);
+            sessionTransport.sendChunk(uploadId, nextOffset, data, nextOffset, length);
             nextOffset = end;
             chunks++;
             bytes += length;
@@ -279,7 +294,7 @@ public final class ModelUploadSession {
         if (nextOffset >= data.length) {
             state = State.FINISHING;
             message = Component.translatable("gui.sparkle_morpher.import.state.verifying");
-            transport.sendFinish(uploadId);
+            sessionTransport.sendFinish(uploadId);
         }
         notifyListeners();
     }

@@ -38,6 +38,20 @@ tasks.named("jar") {
     archiveFileName = rootProject.ext.distributionArchiveName("sparkle-morpher-${project.version}-neo1.21.1")
 }
 
+// Standalone server-only upload source set. Declared before the neoForge block
+// because the mods{} mapping below references it.
+sourceSets {
+    exspm_hserverysm_model {
+        java {
+            srcDir 'exspm_hserverysm_model_shared/java'
+            srcDir 'src/exspm_hserverysm_model/java'
+        }
+        resources {
+            srcDir 'src/exspm_hserverysm_model/resources'
+        }
+    }
+}
+
 neoForge {
     version = project.neoforge_version
 
@@ -58,12 +72,20 @@ neoForge {
         "${mod_id}" {
             sourceSet sourceSets.main
         }
+        "exspm_hserverysm_model" {
+            sourceSet sourceSets.exspm_hserverysm_model
+        }
     }
+
+    // Provide the MC/NeoForge dependency chain to the standalone server-only
+    // upload source set (it must not depend on the SPM main classes).
+    addModdingDependenciesTo(sourceSets.exspm_hserverysm_model)
 }
 
 sourceSets.main.java {
     srcDir 'common/src/main/java'
     srcDir 'src/neoforge/java'
+    srcDir 'exspm_hserverysm_model_shared/java'
     if (!isCurseForgeDist) {
         srcDir rootProject.ext.distributionNativeJavaSourceDir
     }
@@ -75,7 +97,8 @@ if (isCurseForgeDist) {
         source = files(
                 fileTree('common/src/main/java'),
                 fileTree('src/neoforge/java'),
-                fileTree('src/curseforge/java')
+                fileTree('src/curseforge/java'),
+                fileTree('exspm_hserverysm_model_shared/java')
         )
     }
 }
@@ -125,16 +148,16 @@ java {
     toolchain.languageVersion = JavaLanguageVersion.of(21)
 }
 
-processResources {
-    def expandProps = [
-            'version'               : mod_version,
-            'mc_version'            : minecraft_version,
-            'neoforge_version'      : neoforge_version,
-            'mod_id'                : mod_id,
-            'loader_version_range'  : loader_version_range,
-            'neoforge_version_range': neoforge_version_range,
-    ]
+def expandProps = [
+        'version'               : mod_version,
+        'mc_version'            : minecraft_version,
+        'neoforge_version'      : neoforge_version,
+        'mod_id'                : mod_id,
+        'loader_version_range'  : loader_version_range,
+        'neoforge_version_range': neoforge_version_range,
+]
 
+processResources {
     inputs.properties expandProps
 
     filesMatching(['META-INF/neoforge.mods.toml']) {
@@ -149,3 +172,27 @@ processResources {
         rootProject.ext.distributionResourceExcludes(delegate)
     }
 }
+
+// ---- exspm_hserverysm_model: standalone server-only upload mod jar ----
+tasks.named('processExspm_hserverysm_modelResources', ProcessResources) {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    inputs.properties expandProps
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand expandProps
+    }
+}
+
+def serverJar = tasks.register('serverJar', Jar) {
+    group = 'build'
+    description = 'Builds the standalone server-only YSM upload mod jar.'
+    archiveFileName = rootProject.ext.distributionArchiveName("ExSpm-HserverYsm-Model-${ysm_upload_version}-neo1.21.1")
+    from sourceSets.exspm_hserverysm_model.output
+    manifest {
+        attributes(
+                'Implementation-Title'  : 'exspm_hserverysm_model',
+                'Implementation-Version': ysm_upload_version
+        )
+    }
+}
+
+assemble.dependsOn(serverJar)

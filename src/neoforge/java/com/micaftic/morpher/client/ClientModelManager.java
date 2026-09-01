@@ -573,8 +573,8 @@ public class ClientModelManager {
 
     public static boolean canUploadToServer() {
         return NetworkHandler.isClientConnected()
-                && LegacyCompatState.isOysmServer()
-                && LegacyCompatState.isAllowUpload();
+                && (com.micaftic.morpher.client.upload.YsmUploadClientBridge.isChannelAvailable()
+                    || (LegacyCompatState.isOysmServer() && LegacyCompatState.isAllowUpload()));
     }
 
     public static boolean isLocalOnlyModel(String modelId) {

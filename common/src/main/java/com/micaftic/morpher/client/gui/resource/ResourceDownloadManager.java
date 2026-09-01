@@ -3,7 +3,6 @@ package com.micaftic.morpher.client.gui.resource;
 import com.micaftic.morpher.client.ClientModelManager;
 import com.micaftic.morpher.client.upload.ModelUploadSession;
 import com.micaftic.morpher.model.ServerModelManager;
-import com.micaftic.morpher.network.NetworkHandler;
 import com.micaftic.morpher.util.SmExecutors;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -358,7 +357,7 @@ public final class ResourceDownloadManager {
     }
 
     private static boolean canUploadToServer() {
-        return NetworkHandler.isClientConnected() && ClientModelManager.isOysmServer() && ClientModelManager.isAllowUpload();
+        return ClientModelManager.canUploadToServer();
     }
 
     private static void saveDownloadedModel(String fileName, String modelId, byte[] data) throws IOException {

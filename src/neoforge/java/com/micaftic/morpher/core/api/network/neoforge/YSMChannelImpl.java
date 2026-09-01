@@ -1,6 +1,8 @@
 package com.micaftic.morpher.core.api.network.neoforge;
 
+import com.micaftic.morpher.client.upload.YsmUploadClientBridge;
 import com.micaftic.morpher.mixin.ServerCommonPacketListenerImplAccessor;
+import com.micaftic.exspm_hserverysm_model.network.YsmUploadPayload;
 import io.netty.buffer.Unpooled;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.Packet;
@@ -72,6 +74,14 @@ public final class YSMChannelImpl {
                 org.slf4j.LoggerFactory.getLogger("sparkle_morpher").warn("YSM payload handler error", t);
             }
         });
+
+        // Independent upload channel shared with the standalone server-only mod
+        // (exspm_hserverysm_model:1). Registers the same payload type so the SPM client can
+        // send model files to it and receive StartAck/Result back. Version must
+        // match the server mod's registrar version.
+        YsmUploadPayload.initType();
+        event.registrar(YsmUploadPayload.VERSION).optional()
+                .playBidirectional(YsmUploadPayload.TYPE, YsmUploadPayload.CODEC, YsmUploadClientBridge::handle);
     }
 
     public static <T> void register(int discriminator, Class<T> type, BiConsumer<T, FriendlyByteBuf> encoder,
