@@ -30,6 +30,7 @@ public final class YSMChannelImpl {
     private static final Map<Class<?>, Integer> ID_BY_CLASS = new HashMap<>();
 
     private static ResourceLocation channelId;
+    private static String channelVersion;
     private static volatile MinecraftServer currentServer;
 
     private YSMChannelImpl() {
@@ -37,6 +38,7 @@ public final class YSMChannelImpl {
 
     public static void init(ResourceLocation id, String version) {
         channelId = id;
+        channelVersion = version;
         // Register server lifecycle listeners once
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
                 (net.neoforged.neoforge.event.server.ServerStartedEvent e) -> currentServer = e.getServer()
@@ -52,18 +54,22 @@ public final class YSMChannelImpl {
         if (registered) return;
         registered = true;
 
-        PayloadRegistrar registrar = event.registrar(channelId.toString()).optional();
+        PayloadRegistrar registrar = event.registrar(channelVersion).optional();
         YSMPayload.initType(channelId);
 
         registrar.playBidirectional(YSMPayload.TYPE, YSMPayload.CODEC, (payload, context) -> {
-            if (context.player() instanceof ServerPlayer sp) {
-                dispatch(payload.buf(), new ServerPacketContext(
-                        sp.serverLevel().getServer(),
-                        sp,
-                        ((ServerCommonPacketListenerImplAccessor) sp.connection).ysm$getConnection()
-                ));
-            } else if (FMLEnvironment.dist == Dist.CLIENT) {
-                YSMChannelClientImpl.handleClientPayload(payload, context);
+            try {
+                if (context.player() instanceof ServerPlayer sp) {
+                    dispatch(payload.buf(), new ServerPacketContext(
+                            sp.serverLevel().getServer(),
+                            sp,
+                            ((ServerCommonPacketListenerImplAccessor) sp.connection).ysm$getConnection()
+                    ));
+                } else if (FMLEnvironment.dist == Dist.CLIENT) {
+                    YSMChannelClientImpl.handleClientPayload(payload, context);
+                }
+            } catch (Throwable t) {
+                org.slf4j.LoggerFactory.getLogger("sparkle_morpher").warn("YSM payload handler error", t);
             }
         });
     }
@@ -80,10 +86,16 @@ public final class YSMChannelImpl {
     }
 
     public static void dispatch(FriendlyByteBuf buf, PacketContext ctx) {
-        int discriminator = buf.readUnsignedByte();
-        Codec<?> codec = CODECS_BY_ID.get(discriminator);
-        if (codec != null) {
-            codec.dispatch(buf, ctx);
+        try {
+            int discriminator = buf.readUnsignedByte();
+            Codec<?> codec = CODECS_BY_ID.get(discriminator);
+            if (codec != null) {
+                codec.dispatch(buf, ctx);
+            } else {
+                org.slf4j.LoggerFactory.getLogger("sparkle_morpher").warn("[SM] Unknown YSM packet discriminator={}, known ids={}", discriminator, CODECS_BY_ID.keySet());
+            }
+        } catch (Throwable t) {
+            org.slf4j.LoggerFactory.getLogger("sparkle_morpher").warn("YSM dispatch error", t);
         }
     }
 

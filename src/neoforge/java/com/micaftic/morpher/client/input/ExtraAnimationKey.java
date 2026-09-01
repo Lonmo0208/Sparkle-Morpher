@@ -3,6 +3,9 @@ package com.micaftic.morpher.client.input;
 import com.google.common.collect.Lists;
 import com.micaftic.morpher.YesSteveModel;
 import com.micaftic.morpher.capability.PlayerCapability;
+import com.micaftic.morpher.client.animation.custom.CustomRouletteLayout;
+import com.micaftic.morpher.client.animation.custom.CustomRouletteStore;
+import com.micaftic.morpher.config.GeneralConfig;
 import com.micaftic.morpher.client.event.AnimationLockEvent;
 import com.micaftic.morpher.client.model.ModelAssembly;
 import com.micaftic.morpher.core.api.PlatformAPI;
@@ -24,6 +27,8 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.InputEvent;
 
 import java.util.List;
+import java.util.Map;
+import org.apache.commons.lang3.StringUtils;
 
 @EventBusSubscriber(modid = YesSteveModel.MOD_ID, value = Dist.CLIENT, bus = EventBusSubscriber.Bus.GAME)
 public final class ExtraAnimationKey {
@@ -87,22 +92,47 @@ public final class ExtraAnimationKey {
     private static void playExtraAnimation(LocalPlayer localPlayer, KeyMapping eventMapping) {
         PlayerCapability.get(localPlayer).ifPresent(cap -> {
             ModelAssembly modelAssembly = cap.getModelAssembly();
-            int index = KEY_MAPPINGS.indexOf(eventMapping);
+            if (modelAssembly == null) return;
+            int slot = KEY_MAPPINGS.indexOf(eventMapping);
             ModelProperties modelProperties = modelAssembly.getModelData().getModelProperties();
-            OrderedStringMap<String, String> map = modelProperties.getExtraAnimation();
-            if (map.size() > index) {
-                String rouletteKey = map.getKeyAt(index);
-                if ("#return".equals(rouletteKey)) {
-                    NetworkHandler.sendToServer(C2SPlayAnimationPacket.createDefault());
-                    return;
-                }
-                if (rouletteKey.startsWith("#") && modelProperties.getExtraAnimationClassify().containsKey(rouletteKey.substring(1))) {
-                    UnifiedRouletteScreen.setInitialSubmenu(rouletteKey.substring(1));
-                    Minecraft.getInstance().setScreen(new UnifiedRouletteScreen(cap.getModelId(), modelAssembly, cap));
-                    return;
-                }
-                NetworkHandler.sendToServer(new C2SPlayAnimationPacket(index, StringPool.EMPTY, rouletteKey));
+            String modelId = cap.getModelId();
+
+            boolean customMode = GeneralConfig.ROULETTE_CONTENT_MODE.get() == GeneralConfig.RouletteContentMode.CUSTOM;
+            CustomRouletteLayout layout = customMode ? CustomRouletteStore.load(modelId) : null;
+
+            OrderedStringMap<String, String> rootMap;
+            Map<String, Integer> indexMap = null;
+            Map<String, String> categoryMap = null;
+            Map<String, OrderedStringMap<String, String>> classifyMap = null;
+            if (layout != null) {
+                rootMap = CustomRouletteStore.buildRootMap(layout);
+                indexMap = CustomRouletteStore.buildIndexMap(layout);
+                categoryMap = CustomRouletteStore.buildCategoryMap(layout);
+                classifyMap = CustomRouletteStore.buildClassifyMap(layout);
+            } else {
+                rootMap = modelProperties.getExtraAnimation();
+                classifyMap = modelProperties.getExtraAnimationClassify();
             }
+
+            if (rootMap.size() <= slot) return;
+            String rouletteKey = rootMap.getKeyAt(slot);
+            if (StringUtils.isBlank(rouletteKey)) return;
+            if ("#return".equals(rouletteKey)) {
+                NetworkHandler.sendToServer(C2SPlayAnimationPacket.createDefault());
+                return;
+            }
+            if (rouletteKey.startsWith("#")) {
+                String sub = rouletteKey.substring(1);
+                if (classifyMap != null && classifyMap.containsKey(sub)) {
+                    UnifiedRouletteScreen.setInitialSubmenu(sub);
+                    Minecraft.getInstance().setScreen(new UnifiedRouletteScreen(modelId, modelAssembly, cap));
+                }
+                return;
+            }
+
+            int realIndex = indexMap != null ? indexMap.getOrDefault(rouletteKey, slot) : slot;
+            String realCategory = categoryMap != null ? categoryMap.getOrDefault(rouletteKey, StringPool.EMPTY) : StringPool.EMPTY;
+            NetworkHandler.sendToServer(new C2SPlayAnimationPacket(realIndex, realCategory, rouletteKey));
         });
     }
 }

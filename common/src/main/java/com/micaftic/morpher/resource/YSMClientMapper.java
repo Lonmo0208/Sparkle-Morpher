@@ -49,8 +49,8 @@ import org.gagravarr.opus.OpusFile;
 import org.gagravarr.vorbis.VorbisFile;
 import org.joml.Vector2f;
 import org.joml.Vector3f;
+import com.micaftic.morpher.core.imagestream.webp.WebpDecoder;
 import rip.ysm.imagestream.avif.AvifDecoder;
-import rip.ysm.imagestream.webp.WebpDecoder;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -326,7 +326,7 @@ public class YSMClientMapper {
                     }
                     img.setRGB(0, 0, width, height, pixels, 0, width);
                     return img;
-                } else throw new RuntimeException("Invalid RGBA texture");
+                } else throw new RuntimeException("Invalid RGBA texture (need " + (width * height * 4) + " got " + data.length + ")");
             } else {
                 switch (imageFormat) {
                     case 1:
@@ -337,6 +337,8 @@ public class YSMClientMapper {
                         return new WebpDecoder().read(data);
                     case 5:
                         return new AvifDecoder().read(data);
+                    default:
+                        break;
                 }
             }
         } catch (Exception e) {

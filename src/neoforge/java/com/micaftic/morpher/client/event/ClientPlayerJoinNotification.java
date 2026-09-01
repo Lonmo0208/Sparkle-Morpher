@@ -21,7 +21,7 @@ public final class ClientPlayerJoinNotification {
         if (!YesSteveModel.isAvailable()) { YesSteveModel.sendUnavailableMessage(); return; }
         if (PrivacyMode.isActive()) { ClientModelManager.enterPrivacyMode(); return; }
         // 懒加载模式下，冷启动时模型目录尚未建立；先扫描目录，再恢复上次选择。
-        ClientModelManager.reloadLocalModels(error -> ClientModelManager.restorePersistedModelSelection());
+        ClientModelManager.reloadLocalModels(null);
         if (Minecraft.getInstance().isLocalServer()) return;
         // R2.1：原裸线程（handshake watchdog + 60s 服务器未响应提示）改为 BACKGROUND 池提交
         SmExecutors.submit(SmExecutors.Pool.BACKGROUND, () -> { try { Thread.sleep(3000L); Minecraft.getInstance().execute(ClientModelManager::markVanillaServerIfNoHandshake); } catch (InterruptedException ignored) {} });

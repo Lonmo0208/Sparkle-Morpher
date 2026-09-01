@@ -17,6 +17,5 @@ public final class ClientPlayerCloneEvent {
         CapabilityLifecycle.revive(event.getOldPlayer());
         PlayerCapability.get(event.getOldPlayer()).ifPresent(c -> PlayerCapability.get(event.getNewPlayer()).ifPresent(n -> n.copyFrom(c)));
         CapabilityLifecycle.invalidate(event.getOldPlayer());
-        ClientModelManager.restorePersistedModelSelection();
     }
 }

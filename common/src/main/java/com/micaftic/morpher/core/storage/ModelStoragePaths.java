@@ -66,6 +66,22 @@ public final class ModelStoragePaths {
         return folder().resolve("auth");
     }
 
+    public static Path officialYsmRoot() {
+        return folder().getParent().resolve("yes_steve_model");
+    }
+
+    public static Path officialYsmBuiltin() {
+        return officialYsmRoot().resolve("builtin");
+    }
+
+    public static Path officialYsmCustom() {
+        return officialYsmRoot().resolve("custom");
+    }
+
+    public static Path officialYsmAuth() {
+        return officialYsmRoot().resolve("auth");
+    }
+
     public static Path export() {
         return folder().resolve("export");
     }

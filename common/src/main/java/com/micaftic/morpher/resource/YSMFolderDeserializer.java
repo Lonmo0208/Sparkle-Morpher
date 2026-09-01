@@ -9,8 +9,8 @@ import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
+import com.micaftic.morpher.core.imagestream.webp.WebpDecoder;
 import rip.ysm.imagestream.avif.AvifDecoder;
-import rip.ysm.imagestream.webp.WebpDecoder;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;

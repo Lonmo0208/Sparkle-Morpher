@@ -16,6 +16,7 @@ import com.micaftic.morpher.client.model.ModelAssemblyFactory;
 import com.micaftic.morpher.core.api.network.state.LegacySpmHandshakeState;
 import com.micaftic.morpher.core.gpu.GpuRenderPath;
 import com.micaftic.morpher.core.model.ModelRef;
+import com.micaftic.morpher.core.storage.ModelStoragePaths;
 import com.micaftic.morpher.core.model.ModelSourceType;
 import com.micaftic.morpher.core.model.catalog.LocalModelCatalog;
 import com.micaftic.morpher.core.model.selection.EntityModelResolver;
@@ -891,6 +892,9 @@ public class ClientModelManager {
                 scanLocalModelSources(ServerModelManager.BUILT, false, catalog);
                 scanLocalModelSources(ServerModelManager.CUSTOM, false, catalog);
                 scanLocalModelSources(ServerModelManager.AUTH, true, catalog);
+                scanLocalModelSourcesIfDir(ModelStoragePaths.officialYsmBuiltin(), false, catalog);
+                scanLocalModelSourcesIfDir(ModelStoragePaths.officialYsmCustom(), false, catalog);
+                scanLocalModelSourcesIfDir(ModelStoragePaths.officialYsmAuth(), true, catalog);
                 applyLocalModelCatalog(catalog);
                 if (!isLazyModelLoading()) {
                     for (Map.Entry<String, LocalModelCatalog.Entry> entry : catalog.entrySet()) {
@@ -1473,6 +1477,13 @@ private static RawYsmModel parseBbModelImport(byte[] data, String source) throws
         }
         for (Map.Entry<String, Path> source : result.sources().entrySet()) {
             localModelSourcePaths.put(source.getKey(), source.getValue());
+        }
+    }
+
+    private static void scanLocalModelSourcesIfDir(Path baseDir, boolean isAuth,
+                                                   Map<String, LocalModelCatalog.Entry> catalog) throws IOException {
+        if (baseDir != null && java.nio.file.Files.isDirectory(baseDir)) {
+            scanLocalModelSources(baseDir, isAuth, catalog);
         }
     }
 

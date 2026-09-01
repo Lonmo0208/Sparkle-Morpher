@@ -99,6 +99,13 @@ public abstract class GeoReplacedEntityRenderer<TEntity extends LivingEntity, T 
             this.dispatchedMat.set(poseStack.last().pose());
             setCurrentModelRenderCycle(EModelRenderCycle.INITIAL);
             poseStack.pushPose();
+            // Apply entity-level scale (e.g. Pehkui/Size mods mixin entity.getScale())
+            // This matches vanilla LivingEntityRenderer.render() line 97-98
+            float f8 = entity.getScale();
+            poseStack.scale(f8, f8, f8);
+            // Vanilla hook for subclasses and scale mods
+            // This matches vanilla LivingEntityRenderer.render() line 102
+            this.scale(entity, poseStack, partialTick);
             if (entity.getPose() == Pose.SLEEPING && (bedOrientation = entity.getBedOrientation()) != null) {
                 float eyeHeight = entity.getEyeHeight(Pose.STANDING) - 0.1f;
                 poseStack.translate((-bedOrientation.getStepX()) * eyeHeight, 0.0f, (-bedOrientation.getStepZ()) * eyeHeight);

@@ -429,6 +429,9 @@ public final class ServerModelManager {
             scanDirectoryModels(BUILT, CACHE_SERVER, loadedModels, authIds, validCacheFiles, false);
             scanDirectoryModels(CUSTOM, CACHE_SERVER, loadedModels, authIds, validCacheFiles, false);
             scanDirectoryModels(AUTH, CACHE_SERVER, loadedModels, authIds, validCacheFiles, true);
+            scanDirIfExists(ModelStoragePaths.officialYsmBuiltin(), CACHE_SERVER, loadedModels, authIds, validCacheFiles, false);
+            scanDirIfExists(ModelStoragePaths.officialYsmCustom(), CACHE_SERVER, loadedModels, authIds, validCacheFiles, false);
+            scanDirIfExists(ModelStoragePaths.officialYsmAuth(), CACHE_SERVER, loadedModels, authIds, validCacheFiles, true);
             try (Stream<Path> stream = Files.list(CACHE_SERVER)) {
                 stream.forEach(file -> {
                     if (!validCacheFiles.contains(file.getFileName().toString())) {
@@ -450,7 +453,6 @@ public final class ServerModelManager {
 
     private static void scanDirectoryModels(Path baseDir, Path cacheDir, Map<String, ServerModelData> loaded, Set<String> authIds, Set<String> validCaches, boolean isAuth) {
         if (baseDir == null || !Files.isDirectory(baseDir)) return;
-
         // R8：遍历发现集中到 LocalModelScanner（纯 Java 可测，id 归一/kind 判定/文件夹判定统一）；
         // 解析与缓存仍在本类（server cache 语义），单条目失败 catch 后继续。
         try {
@@ -498,6 +500,15 @@ public final class ServerModelManager {
         } catch (Exception e) {
             YesSteveModel.LOGGER.error("Failed to walk directory for packs: " + baseDir, e);
         }
+    }
+
+    private static void scanDirIfExists(Path baseDir, Path cacheDir, Map<String, ServerModelData> loaded,
+                                        Set<String> authIds, Set<String> validCaches, boolean isAuth) {
+        if (baseDir == null || !Files.isDirectory(baseDir)) {
+            return;
+        }
+        scanDirectoryPacks(baseDir);
+        scanDirectoryModels(baseDir, cacheDir, loaded, authIds, validCaches, isAuth);
     }
 
     private static byte[] readModelFileBytes(Path file) throws IOException {
@@ -978,6 +989,9 @@ public final class ServerModelManager {
             scanDirectoryModels(BUILT, CACHE_SERVER, loadedModels, authIds, validCacheFiles, false);
             scanDirectoryModels(CUSTOM, CACHE_SERVER, loadedModels, authIds, validCacheFiles, false);
             scanDirectoryModels(AUTH, CACHE_SERVER, loadedModels, authIds, validCacheFiles, true);
+            scanDirIfExists(ModelStoragePaths.officialYsmBuiltin(), CACHE_SERVER, loadedModels, authIds, validCacheFiles, false);
+            scanDirIfExists(ModelStoragePaths.officialYsmCustom(), CACHE_SERVER, loadedModels, authIds, validCacheFiles, false);
+            scanDirIfExists(ModelStoragePaths.officialYsmAuth(), CACHE_SERVER, loadedModels, authIds, validCacheFiles, true);
             cleanupServerCache(validCacheFiles);
             ModelLoadResult result = new ModelLoadResult(true, null, loadedModels, authIds.toArray(new String[0]));
             onModelLoadComplete(result, null);

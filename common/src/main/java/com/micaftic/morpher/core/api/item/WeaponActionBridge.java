@@ -7,7 +7,7 @@ public final class WeaponActionBridge {
     private WeaponActionBridge() {
     }
 
-        public static WeaponActionState get(LivingEntity entity, float partialTick) {
-        throw new AssertionError();
+    public static WeaponActionState get(LivingEntity entity, float partialTick) {
+        return WeaponActionState.EMPTY;
     }
 }

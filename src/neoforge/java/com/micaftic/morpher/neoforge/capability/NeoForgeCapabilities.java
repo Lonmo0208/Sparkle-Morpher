@@ -14,17 +14,21 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 public final class NeoForgeCapabilities {
-    private static final DeferredRegister<AttachmentType<?>> ATT = DeferredRegister.create(NeoForgeRegistries.ATTACHMENT_TYPES, YesSteveModel.MOD_ID);
+    // Use official YSM namespace so SPM attachments don't conflict with server-side YSM sync packets.
+    // Official YSM registers all attachment types under "yes_steve_model" namespace.
+    private static final DeferredRegister<AttachmentType<?>> ATT = DeferredRegister.create(NeoForgeRegistries.ATTACHMENT_TYPES, "yes_steve_model");
 
-    public static final Supplier<AttachmentType<AuthModelsCapability>> AUTH_MODELS = ATT.register("auth_models", () ->
+    // Attachment names MUST match official YSM exactly — otherwise NeoForge EntityAdd attachment
+    // data from an official-YSM server is silently skipped ("Encountered unknown ...").
+    public static final Supplier<AttachmentType<AuthModelsCapability>> AUTH_MODELS = ATT.register("own_models", () ->
             AttachmentType.builder(AuthModelsCapability::new).serialize(new AuthModelsSerializer()).copyOnDeath().build());
     public static final Supplier<AttachmentType<StarModelsCapability>> STAR_MODELS = ATT.register("star_models", () ->
             AttachmentType.builder(StarModelsCapability::new).serialize(new StarModelsSerializer()).copyOnDeath().build());
-    public static final Supplier<AttachmentType<ModelInfoCapability>> MODEL_INFO = ATT.register("model_info", () ->
+    public static final Supplier<AttachmentType<ModelInfoCapability>> MODEL_INFO = ATT.register("model_id", () ->
             AttachmentType.builder(ModelInfoCapability::new).serialize(new ModelInfoSerializer()).copyOnDeath().build());
-    public static final Supplier<AttachmentType<ProjectileModelCapability>> PROJECTILE_MODEL = ATT.register("projectile_model", () ->
+    public static final Supplier<AttachmentType<ProjectileModelCapability>> PROJECTILE_MODEL = ATT.register("projectile_model_id", () ->
             AttachmentType.builder(ProjectileModelCapability::new).serialize(new ProjectileModelSerializer()).build());
-    public static final Supplier<AttachmentType<VehicleModelCapability>> VEHICLE_MODEL = ATT.register("vehicle_model", () ->
+    public static final Supplier<AttachmentType<VehicleModelCapability>> VEHICLE_MODEL = ATT.register("vehicle_model_id", () ->
             AttachmentType.builder(VehicleModelCapability::new).serialize(new VehicleModelSerializer()).build());
 
     public static void register(IEventBus bus) { ATT.register(bus); }

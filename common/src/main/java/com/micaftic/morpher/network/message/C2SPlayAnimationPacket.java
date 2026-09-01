@@ -57,11 +57,10 @@ public class C2SPlayAnimationPacket {
         buf.writeVarInt(message.animationIndex);
         buf.writeUtf(message.category);
         buf.writeVarInt(message.entityId);
-        buf.writeUtf(message.animationKey);
     }
 
     public static C2SPlayAnimationPacket decode(FriendlyByteBuf buf) {
-        return new C2SPlayAnimationPacket(buf.readVarInt(), buf.readUtf(), buf.readVarInt(), buf.readUtf());
+        return new C2SPlayAnimationPacket(buf.readVarInt(), buf.readUtf(), buf.readVarInt());
     }
 
     public static void handle(C2SPlayAnimationPacket message, PacketContext ctx) {

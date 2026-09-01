@@ -8,6 +8,7 @@ import com.micaftic.morpher.client.compat.ClientRenderCompatibilityRegistry;
 import com.micaftic.morpher.client.input.InputStateKey;
 import com.micaftic.morpher.client.upload.ModelUploadSession;
 import com.micaftic.morpher.client.upload.UploadManager;
+import com.micaftic.morpher.event.EntityJoinCallbackEvent;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.neoforged.api.distmarker.Dist;
@@ -52,6 +53,8 @@ public final class ClientTickEvent {
         if (localPlayer != null) {
             PlayerCapability.get(localPlayer).ifPresent(cap -> cap.tickAnimations());
         }
+        // Poll NeoForge Entity Attachments for official-YSM-server model changes
+        EntityJoinCallbackEvent.tickPoll();
         ClientModelManager.restorePersistedModelSelectionOnVanillaServer();
     }
 

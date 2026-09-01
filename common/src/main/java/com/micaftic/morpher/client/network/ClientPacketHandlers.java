@@ -14,6 +14,7 @@ import com.micaftic.morpher.client.compat.touhoulittlemaid.TouhouLittleMaidClien
 import com.micaftic.morpher.core.compat.touhoulittlemaid.TouhouMaidCompat;
 import com.micaftic.morpher.core.compat.touhoulittlemaid.MaidCapability;
 import com.micaftic.morpher.event.EntityJoinCallbackEvent;
+import com.micaftic.morpher.geckolib3.core.molang.util.StringPool;
 import com.micaftic.morpher.geckolib3.resource.GeckoLibCache;
 import com.micaftic.morpher.molang.parser.ParseException;
 import com.micaftic.morpher.network.NetworkHandler;
@@ -32,6 +33,7 @@ import com.micaftic.morpher.network.message.S2CSyncStarModelsPacket;
 import com.micaftic.morpher.network.message.S2CSyncVehicleModelPacket;
 import com.micaftic.morpher.network.message.S2CVersionCheckPacket;
 import com.micaftic.morpher.util.LocalStarModelsStore;
+import it.unimi.dsi.fastutil.ints.Int2FloatMap;
 import it.unimi.dsi.fastutil.ints.Int2FloatOpenHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -42,6 +44,8 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.nio.ByteBuffer;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class ClientPacketHandlers {
     private ClientPacketHandlers() {}
@@ -92,13 +96,30 @@ public final class ClientPacketHandlers {
         }
     }
 
+    private static final Set<UUID> RECENT_DEFAULT_BLOCKED = java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
+
     public static void handleSetModelAndTexture(Object obj) {
         S2CSetModelAndTexturePacket message = (S2CSetModelAndTexturePacket) obj;
         EntityJoinCallbackEvent.addCallback(message.getEntityId(), entity -> {
             PlayerCapability.get(entity).ifPresent(cap -> {
                 LocalPlayer localPlayer = Minecraft.getInstance().player;
-                boolean keepLocalOnlyModel = entity == localPlayer
-                        && (PrivacyMode.isActive() || ClientModelManager.isSelectedLocalOnlyModel(cap.getModelId()));
+                boolean isLocalPlayer = entity == localPlayer;
+
+                if ("default".equals(message.getModelId())) {
+                    String currentModelId = cap.getModelId();
+                    boolean hasNonDefaultModel = !"default".equals(currentModelId) && cap.hasRenderableModel();
+                    if (hasNonDefaultModel) {
+                        RECENT_DEFAULT_BLOCKED.add(entity.getUUID());
+                        applyPlayerState(entity, message.getEntityModelSync());
+                        return;
+                    }
+                } else {
+                    RECENT_DEFAULT_BLOCKED.remove(entity.getUUID());
+                }
+
+                boolean keepLocalOnlyModel = isLocalPlayer
+                        && (PrivacyMode.isActive()
+                            || (!ClientModelManager.isOysmServer() && ClientModelManager.isSelectedLocalOnlyModel(cap.getModelId())));
                 if (!keepLocalOnlyModel) {
                     cap.initModelWithTexture(message.getModelId(), message.getTextureId());
                     cap.setForceDisabled(message.isDisabled());

@@ -67,7 +67,7 @@ public abstract class CustomPlayerEntity extends LivingAnimatable<Player> implem
 
     @Override
     public boolean shouldSkipAnimation(AnimationEvent<?> event) {
-        return event.isFirstPerson() || (!this.isLocalPlayer && OculusCompat.isPBRActive());
+        return OculusCompat.isPBRActive();
     }
 
     @Override

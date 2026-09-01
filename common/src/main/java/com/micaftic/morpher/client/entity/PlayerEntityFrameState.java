@@ -7,6 +7,7 @@ import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.phys.Vec3;
 
 public class PlayerEntityFrameState extends LivingEntityFrameState<Player> {
 
@@ -32,6 +33,14 @@ public class PlayerEntityFrameState extends LivingEntityFrameState<Player> {
 
     private boolean isShieldBlocking;
 
+    private boolean hasProtocolInput;
+
+    private float derivedStrafe;
+
+    private float derivedVertical;
+
+    private float derivedForward;
+
     private static float headYawDelta;
 
     private static float lastYRot;
@@ -55,6 +64,10 @@ public class PlayerEntityFrameState extends LivingEntityFrameState<Player> {
         this.verticalInput = 0.0f;
         this.forwardInput = 0.0f;
         this.isShieldBlocking = false;
+        this.hasProtocolInput = false;
+        this.derivedStrafe = 0.0f;
+        this.derivedVertical = 0.0f;
+        this.derivedForward = 0.0f;
     }
 
     public void applySyncMessage(S2CSyncPlayerStatePacket message) {
@@ -91,6 +104,10 @@ public class PlayerEntityFrameState extends LivingEntityFrameState<Player> {
         if ((message.flags & 1024) != 0) {
             this.isShieldBlocking = message.shieldBlockCooldown;
         }
+        boolean hasRealMovement = message.forwardInput != 0 || message.strafeInput != 0 || message.verticalInput != 0;
+        if ((message.flags & (128 | 256 | 512)) != 0 && !this.isLocalPlayer && hasRealMovement) {
+            this.hasProtocolInput = true;
+        }
     }
 
     public boolean isFlying() {
@@ -117,15 +134,24 @@ public class PlayerEntityFrameState extends LivingEntityFrameState<Player> {
     }
 
     public float getStrafeInput() {
-        return this.strafeInput;
+        if (this.hasProtocolInput) {
+            return this.strafeInput;
+        }
+        return this.derivedStrafe;
     }
 
     public float getVerticalInput() {
-        return this.verticalInput;
+        if (this.hasProtocolInput) {
+            return this.verticalInput;
+        }
+        return this.derivedVertical;
     }
 
     public float getForwardInput() {
-        return this.forwardInput;
+        if (this.hasProtocolInput) {
+            return this.forwardInput;
+        }
+        return this.derivedForward;
     }
 
     public boolean isLocalPlayer() {
@@ -133,9 +159,9 @@ public class PlayerEntityFrameState extends LivingEntityFrameState<Player> {
     }
 
     public boolean hasMovementInput() {
-        return Math.abs(this.strafeInput) > 1.0E-4f
-                || Math.abs(this.verticalInput) > 1.0E-4f
-                || Math.abs(this.forwardInput) > 1.0E-4f;
+        return Math.abs(getStrafeInput()) > 1.0E-4f
+                || Math.abs(getVerticalInput()) > 1.0E-4f
+                || Math.abs(getForwardInput()) > 1.0E-4f;
     }
 
     public boolean isShieldBlocking() {
@@ -154,6 +180,14 @@ public class PlayerEntityFrameState extends LivingEntityFrameState<Player> {
     }
 
     @Override
+    public void onTimeUpdate(float currentTick, float deltaTick, float partialTick) {
+        super.onTimeUpdate(currentTick, deltaTick, partialTick);
+        if (!this.isLocalPlayer && !this.hasProtocolInput) {
+            updateDerivedMovementInput();
+        }
+    }
+
+    @Override
     public void onTickUpdate(int currentTick, int previousTick) {
         if (this.isLocalPlayer) {
             updateHeadYaw(this.entity, currentTick, previousTick);
@@ -167,6 +201,25 @@ public class PlayerEntityFrameState extends LivingEntityFrameState<Player> {
             headYawDelta = (Mth.wrapDegrees(yRot - lastYRot) * 20.0f) / Math.max(1, currentTick - previousTick);
         }
         lastYRot = yRot;
+    }
+
+    private void updateDerivedMovementInput() {
+        Vec3 delta = getPositionDelta();
+        float dx = (float) delta.x;
+        float dz = (float) delta.z;
+        float horiz = Mth.sqrt(dx * dx + dz * dz);
+        if (horiz > 1.0E-4f) {
+            float yaw = this.entity.getYRot() * (0.017453292519943295f);
+            float sinYaw = Mth.sin(yaw);
+            float cosYaw = Mth.cos(yaw);
+            this.derivedForward = ((-sinYaw * dx) + (cosYaw * dz)) / horiz;
+            this.derivedStrafe = ((cosYaw * dx) + (sinYaw * dz)) / horiz;
+        } else {
+            this.derivedForward = 0.0f;
+            this.derivedStrafe = 0.0f;
+        }
+        float dy = (float) (this.entity.getY() - this.entity.yo);
+        this.derivedVertical = Mth.clamp(dy * 1.5f, -1.0f, 1.0f);
     }
 
     public static float getHeadYawDelta() {

@@ -48,12 +48,14 @@ public class RenderFirstPlayerBackground {
         }
         currentFrameRendered = true;
         PlayerCapability.get(player).ifPresent(cap -> {
-            if (!cap.isModelActive()) {
-                return;
-            }
+            boolean isActive = cap.isModelActive();
             String modelId = cap.getModelId();
             ModelAssembly modelAssembly = cap.getModelAssembly();
-            if (modelAssembly == null || modelAssembly.getAnimationBundle() == null || !modelAssembly.getAnimationBundle().getArmModel().hasCustomLimbs) {
+            boolean armOk = modelAssembly != null && modelAssembly.getAnimationBundle() != null && modelAssembly.getAnimationBundle().getArmModel() != null && modelAssembly.getAnimationBundle().getArmModel().hasCustomLimbs;
+            if (!isActive) {
+                return;
+            }
+            if (!armOk) {
                 return;
             }
             CustomPlayerRenderer instance = RendererManager.getPlayerRenderer();

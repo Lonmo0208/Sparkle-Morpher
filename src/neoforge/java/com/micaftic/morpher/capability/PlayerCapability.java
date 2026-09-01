@@ -253,11 +253,17 @@ public final class PlayerCapability extends CustomPlayerEntity {
         MolangVarHolder varHolder = this.molangVarsMap.computeIfAbsent(i, i2 -> {
             return new MolangVarHolder();
         });
+        boolean hashMatches = i == this.currentModelHashId;
+        // Cross-mod interop: an official-YSM server sends molang vars keyed by ITS model hashId,
+        // which may differ from the hashId SPM computed for the same downloaded model file. The
+        // vars are always for the CURRENT model of THIS player, so apply them to the active
+        // serverVarContainer regardless of hashId match (a strict match would drop the animation
+        // driver on every official-YSM server).
         if (isLocalPlayerModel()) {
             if (varHolder.currentVars == null) {
                 varHolder.currentVars = int2FloatOpenHashMap;
                 varHolder.applyPendingDeltas();
-                if (i == this.currentModelHashId) {
+                if (hashMatches || this.currentModelHashId == 0) {
                     this.serverVarContainer = createLocalRoamingStruct(i, int2FloatOpenHashMap);
                     clearAnimationControllers();
                     return;
@@ -268,8 +274,12 @@ public final class PlayerCapability extends CustomPlayerEntity {
         }
         varHolder.currentVars = int2FloatOpenHashMap;
         varHolder.applyPendingDeltas();
-        if (i == this.currentModelHashId) {
+        if (hashMatches || this.currentModelHashId == 0) {
             this.serverVarContainer = new Int2FloatOpenHashMapStruct(int2FloatOpenHashMap);
+        } else if (this.serverVarContainer instanceof Int2FloatOpenHashMapStruct struct) {
+            // Server hashId differs from ours but the model is already loaded: merge the full
+            // snapshot into the active container so remote animations keep driving.
+            struct.merge(int2FloatOpenHashMap);
         }
     }
 
@@ -294,6 +304,13 @@ public final class PlayerCapability extends CustomPlayerEntity {
                 varHolder.currentVars.putAll(int2FloatMap);
             } else {
                 varHolder.pendingDeltas.enqueue(int2FloatMap);
+            }
+            // Cross-mod interop: the official-YSM server keys molang vars by ITS hashId, which may
+            // never equal the hashId SPM derives from the downloaded model file. The vars are always
+            // for the CURRENT model of this player, so apply them unconditionally to the active
+            // serverVarContainer (otherwise animation freezes after the initial full-sync).
+            if (this.serverVarContainer instanceof Int2FloatOpenHashMapStruct struct) {
+                struct.merge(int2FloatMap);
             }
             applyMolangDelta(i, int2FloatMap);
         }

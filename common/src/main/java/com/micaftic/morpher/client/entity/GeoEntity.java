@@ -136,36 +136,65 @@ public abstract class GeoEntity<T extends Entity> extends AnimatableEntity<T> {
     }
 
     public final void setModelId(String str) {
+        if (java.util.Objects.equals(this.modelId, str)) {
+            return;
+        }
+        this.modelId = str;
+        refreshModel();
+    }
+
+    public final void forceReloadModel(String str) {
         this.modelId = str;
         refreshModel();
     }
 
     private void refreshModel() {
-        ClientModelManager.getModelContext(this.modelId).ifPresentOrElse(assembly -> {
-            updateRenderShape(assembly, false);
-        }, () -> {
-            if (ClientModelManager.isModelLoadPending(this.modelId) && hasRenderableModel()) {
+        // Step 1: try the requested modelId first
+        Optional<ModelAssembly> requested = ClientModelManager.getModelContext(this.modelId);
+        if (requested.isPresent()) {
+            updateRenderShape(requested.get(), false);
+        } else {
+            // Requested model not ready yet. Be conservative:
+            // - If it's still loading and we already have a model, KEEP the existing one
+            //   (avoid resetting animation controllers every tick during async load).
+            // - Only fall back if we have nothing at all, or if the modelId is definitively unknown.
+            boolean pending = ClientModelManager.isModelLoadPending(this.modelId);
+            if (pending && hasRenderableModel()) {
+                // Still loading + we have something to show → keep what we have
                 return;
             }
-            ModelAssembly modelAssembly = ClientModelManager.getLocalModelContext();
-            if (modelAssembly == null || !modelAssembly.isRuntimeResident()) {
-                if (this.renderShape != null || this.modelAssembly != null) {
-                    clearModel();
-                }
+            if (pending && !hasRenderableModel()) {
+                // Still loading but nothing to show yet → also wait, do NOT clear
                 return;
             }
-            updateRenderShape(modelAssembly, true);
-        });
+            // ModelId is not pending AND not loaded → it's definitively unknown.
+            // Fall back to local default instead of hard-clearing (prevents flicker).
+            ModelAssembly fallback = ClientModelManager.getLocalModelContext();
+            if (fallback != null && fallback.isRuntimeResident()) {
+                updateRenderShape(fallback, true);
+            } else if (this.renderShape != null || this.modelAssembly != null) {
+                // Last resort: default model also unavailable, only then clear
+                clearModel();
+                return;
+            } else {
+                return;
+            }
+        }
+
+        // Step 2: if a renderShape now exists, reconcile state
         if (this.renderShape != null) {
-            if ((this.renderShape.context != this.modelAssembly || this.renderShape.isDefault != this.loaded) && this.renderShape.isValid()) {
+            if (this.renderShape.isValid()
+                    && (this.renderShape.context != this.modelAssembly
+                        || this.renderShape.isDefault != this.loaded)) {
                 this.modelAssembly = this.renderShape.context;
                 this.loaded = this.renderShape.isDefault;
                 onModelLoaded(this.modelAssembly);
                 initAnimationControllers(getAnimationProcessor(), this.modelAssembly.getExpressionCache().getEvents());
-                return;
             }
+            // No change to modelAssembly → keep existing animation controllers intact
             return;
         }
+        // renderShape somehow disappeared — only clear if we had something before
         if (this.modelAssembly != null) {
             clearModel();
         }
@@ -241,7 +270,10 @@ public abstract class GeoEntity<T extends Entity> extends AnimatableEntity<T> {
 
     @Override
     public boolean shouldSkipAnimation(AnimationEvent<?> event) {
-        return event.isFirstPerson() || OculusCompat.isPBRActive();
+        // Never skip animations here — only PlayerCapability (via CustomPlayerEntity) has a
+        // legitimate reason to skip (local-player first-person, where PlayerGeoEntity drives arms).
+        // The base classes must evaluate so remote entities and non-player animators keep ticking.
+        return OculusCompat.isPBRActive();
     }
 
     @Override
@@ -314,24 +346,26 @@ public abstract class GeoEntity<T extends Entity> extends AnimatableEntity<T> {
             return null;
         }
         boolean isGuiPreview = ModelPreviewRenderer.isPreview() || com.micaftic.morpher.client.render.RenderContext.isGuiPreview();
-        if (!isGuiPreview) {
-            int renderFrameId = AnimationFrameProfiler.getRenderFrameId();
-            if (this.modelFuture != null && this.asyncSubmitFrameId != renderFrameId) {
-                // The pending task belongs to a frame in which this entity was not rendered;
-                // its time base is stale. Discard it and submit a fresh task below.
+        if (isGuiPreview || this instanceof com.micaftic.morpher.capability.PlayerCapability) {
+            if (this.modelFuture != null) {
                 awaitAsyncResult();
             }
-            if (this.modelFuture == null && this.asyncSubmitFrameId != renderFrameId) {
-                // Submit only while the entity is actually being rendered this frame. Keeping the
-                // worker queue bounded by the visible set (and submit order equal to render order)
-                // keeps frame pacing regular instead of stalling on accumulated background tasks.
-                submitAsyncUpdate(partialTick);
-            }
-            if (this.modelFuture != null) {
-                AnimationEvent<?> event = awaitAsyncResult();
-                if (event != null) {
-                    return event;
-                }
+            return super.processAnimationImpl(partialTick, isFirstPerson);
+        }
+        // First-person arm (PlayerGeoEntity): async pipeline, submit only while actually rendered
+        int renderFrameId = AnimationFrameProfiler.getRenderFrameId();
+        if (this.modelFuture != null && this.asyncSubmitFrameId != renderFrameId) {
+            // The pending task belongs to a frame in which this entity was not rendered;
+            // its time base is stale. Discard it and submit a fresh task below.
+            awaitAsyncResult();
+        }
+        if (this.modelFuture == null && this.asyncSubmitFrameId != renderFrameId) {
+            submitAsyncUpdate(partialTick);
+        }
+        if (this.modelFuture != null) {
+            AnimationEvent<?> event = awaitAsyncResult();
+            if (event != null) {
+                return event;
             }
         }
         return super.processAnimationImpl(partialTick, isFirstPerson);

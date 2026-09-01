@@ -32,13 +32,22 @@ public class PlayerGeoEntity extends GeoEntity<LocalPlayer> {
 
     @Override
     public boolean shouldSkipAnimation(AnimationEvent<?> event) {
-        return true;
+        return false;
+    }
+
+    @Override
+    public boolean isModelReady() {
+        // buildRenderShape() returns the capability's live renderShape, so readiness must be
+        // delegated to the capability rather than the stale internal this.renderShape field.
+        // Otherwise the first-person arm/held-item render stays skipped (processAnimation null)
+        // until the model is re-selected through the GUI.
+        return this.playerCapability.isModelReady();
     }
 
     @Override
     public void tickModel() {
         if (this.playerCapability.getModelAssembly() != getModelAssembly()) {
-            setModelId(this.playerCapability.getModelId());
+            forceReloadModel(this.playerCapability.getModelId());
         }
     }
 

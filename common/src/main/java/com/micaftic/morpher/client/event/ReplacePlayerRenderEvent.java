@@ -2,6 +2,7 @@ package com.micaftic.morpher.client.event;
 
 import com.micaftic.morpher.YesSteveModel;
 import com.micaftic.morpher.capability.PlayerCapability;
+import com.micaftic.morpher.capability.client.PlayerCapabilityClientStore;
 import com.micaftic.morpher.client.renderer.ModelPreviewRenderer;
 import com.micaftic.morpher.client.renderer.RendererManager;
 import com.micaftic.morpher.core.config.ConfigPolicies;
@@ -30,6 +31,10 @@ public class ReplacePlayerRenderEvent {
         }
         if ((!entity.equals(localPlayer) && ConfigPolicies.render().disableOtherModel()) || entity.isSpectator()) {
             return false;
+        }
+        if (PlayerCapabilityClientStore.isFakePlayerEntity(entity)) {
+            PlayerCapability cap = PlayerCapabilityClientStore.getByUuid(entity.getUUID()).orElse(null);
+            return cap != null && cap.isModelActive();
         }
         PlayerCapability cap = PlayerCapability.get(entity).orElse(null);
         if (cap != null && cap.isModelActive()) {
