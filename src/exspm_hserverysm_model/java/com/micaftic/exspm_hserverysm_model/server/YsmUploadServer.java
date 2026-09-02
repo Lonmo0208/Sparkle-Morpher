@@ -68,27 +68,40 @@ public final class YsmUploadServer {
         }
         cleanupExpired();
         if (!YsmUploadConfig.allowUpload()) {
-            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0, "Upload disabled by server config"));
+            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0,
+                    YsmUploadI18n.t(player, "upload.err.disabled")));
             return;
         }
         if (YsmUploadConfig.requireOp() && !player.hasPermissions(2)) {
-            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0, "Permission denied"));
+            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0,
+                    YsmUploadI18n.t(player, "upload.err.op")));
+            return;
+        }
+        // OP-Authorization gate: non-operators need a valid grant issued by an
+        // operator (/exspm_upload grant), otherwise R18 models could be uploaded
+        // without any review. Grants expire and must be re-granted afterwards.
+        if (YsmUploadConfig.requireGrant() && !player.hasPermissions(2) && !YsmUploadGrantStore.isGranted(player.getUUID())) {
+            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0,
+                    YsmUploadI18n.t(player, "upload.err.grant", player.getGameProfile().getName())));
             return;
         }
         String modelId = YsmModelStore.sanitizeModelId(start.modelId());
         String fileName = start.fileName() == null ? "" : start.fileName();
         String fileKind = fileKindOf(fileName);
         if (modelId == null) {
-            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0, "Invalid model id"));
+            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0,
+                    YsmUploadI18n.t(player, "upload.err.bad_id")));
             return;
         }
         if (!"ysm".equals(fileKind) && !"zip".equals(fileKind)) {
-            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0, "Unsupported format: ." + (fileKind.isEmpty() ? "?" : fileKind)));
+            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0,
+                    YsmUploadI18n.t(player, "upload.err.bad_format", fileKind.isEmpty() ? "?" : fileKind)));
             return;
         }
         int maxBytes = YsmUploadConfig.maxModelBytes();
         if (start.totalBytes() <= 0 || start.totalBytes() > maxBytes) {
-            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0, "File size out of range"));
+            sendStartAck(context, new YsmUploadPackets.StartAck(0L, (byte) 6, 0, 0, 0,
+                    YsmUploadI18n.t(player, "upload.err.bad_size")));
             return;
         }
         long uploadId;
@@ -120,30 +133,35 @@ public final class YsmUploadServer {
         }
         UploadSession session = SESSIONS.remove(finish.uploadId());
         if (session == null || !session.owner().equals(player.getUUID())) {
-            sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 4, "", "Session expired"));
+            sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 4, "",
+                    YsmUploadI18n.t(player, "upload.err.session_expired")));
             return;
         }
         if (session.isFailed() || !session.isComplete()) {
-            sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 5, "", "Incomplete upload"));
+            sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 5, "",
+                    YsmUploadI18n.t(player, "upload.err.incomplete")));
             return;
         }
         byte[] data = session.copyData();
         if (!session.sha256().isEmpty()) {
             String actual = sha256Hex(data);
             if (!session.sha256().equalsIgnoreCase(actual)) {
-                sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 1, "", "Hash mismatch"));
+                sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 1, "",
+                        YsmUploadI18n.t(player, "upload.err.hash")));
                 return;
             }
         }
         YsmModelStore.Result stored = YsmModelStore.store(session.fileKind(), data, session.modelId());
         if (!stored.success()) {
-            sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 2, "", stored.message()));
+            sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 2, "",
+                    YsmUploadI18n.t(player, "upload.err.store")));
             return;
         }
         String modelId = session.modelId();
-        YsmUploadMod.LOGGER.info("Stored uploaded model '{}' -> {} ({} bytes)", modelId, stored.path(), data.length);
+        YsmUploadMod.LOGGER.info(YsmUploadI18n.t("en_us", "upload.ok.stored", modelId, stored.path(), data.length));
         YsmModelReloader.requestReload(player.getServer());
-        sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 0, modelId, "Uploaded"));
+        sendResult(context, new YsmUploadPackets.Result(finish.uploadId(), (byte) 0, modelId,
+                YsmUploadI18n.t(player, "upload.ok")));
     }
 
     private static void cleanupExpired() {

@@ -1559,10 +1559,11 @@ public class ModernPlayerModelScreen extends Screen {
     }
 
     private Component getCustomFolderUploadTooltip() {
-        if (ClientModelManager.isAllowUpload() && ClientModelManager.isOysmServer()) {
+        boolean uploadChannel = com.micaftic.morpher.client.upload.YsmUploadClientBridge.isChannelAvailable();
+        if (uploadChannel || (ClientModelManager.isAllowUpload() && ClientModelManager.isOysmServer())) {
             return Component.translatable("gui.sparkle_morpher.upload_custom_folder.tooltip");
         }
-        if (!ClientModelManager.isOysmServer()) {
+        if (!ClientModelManager.isOysmServer() && !uploadChannel) {
             return Component.translatable("gui.sparkle_morpher.upload_custom_folder.tooltip.waiting");
         }
         return Component.translatable("gui.sparkle_morpher.upload_custom_folder.tooltip.disabled");

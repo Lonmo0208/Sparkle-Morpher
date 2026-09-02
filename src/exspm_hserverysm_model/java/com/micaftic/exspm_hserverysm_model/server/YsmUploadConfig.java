@@ -17,8 +17,20 @@ public final class YsmUploadConfig {
             .define("allowUpload", true);
 
     private static final ModConfigSpec.BooleanValue REQUIRE_OP = BUILDER
-            .comment("Only operators (permission level >= 2) may upload models.")
-            .define("requireOp", true);
+            .comment("Only operators (permission level >= 2) may upload models. When false, " +
+                    "non-operator players with a valid OP grant (see REQUIRE_GRANT) may upload.")
+            .define("requireOp", false);
+
+    private static final ModConfigSpec.BooleanValue REQUIRE_GRANT = BUILDER
+            .comment("Non-operator players may only upload while holding a valid grant issued by an " +
+                    "operator via /exspm_upload grant. Grants expire after grantDurationHours and " +
+                    "must be re-granted afterwards. This blocks R18 uploads without operator review.")
+            .define("requireGrant", true);
+
+    private static final ModConfigSpec.IntValue GRANT_DURATION_HOURS = BUILDER
+            .comment("How long an OP grant stays valid, in hours (default 12h). After expiry the " +
+                    "player must ask an operator for a new grant.")
+            .defineInRange("grantDurationHours", 12, 1, 24 * 365);
 
     private static final ModConfigSpec.IntValue MAX_MODEL_BYTES = BUILDER
             .comment("Maximum accepted model file size in bytes.")
@@ -51,6 +63,14 @@ public final class YsmUploadConfig {
 
     public static boolean requireOp() {
         return REQUIRE_OP.get();
+    }
+
+    public static boolean requireGrant() {
+        return REQUIRE_GRANT.get();
+    }
+
+    public static int grantDurationHours() {
+        return GRANT_DURATION_HOURS.get();
     }
 
     public static int maxModelBytes() {

@@ -247,6 +247,10 @@ public class CustomFolderUploadScreen extends Screen implements ModelUploadSessi
     }
 
     private boolean preflightUpload() {
+        // 新通道协商成功时直接放行，legacy 检查仅用于纯官方 YSM 服务器场景。
+        if (com.micaftic.morpher.client.upload.YsmUploadClientBridge.isChannelAvailable()) {
+            return true;
+        }
         if (!ClientModelManager.isOysmServer()) {
             showUploadBlocked(Component.translatable("gui.sparkle_morpher.import.error.waiting_handshake"));
             return false;
@@ -585,7 +589,9 @@ public class CustomFolderUploadScreen extends Screen implements ModelUploadSessi
             // per-row Upload button
             int btnX = this.width - 86;
             int btnY = rowY + 2;
-            boolean btnEnabled = !entry.queued && !entry.completed && ClientModelManager.isOysmServer() && ClientModelManager.isAllowUpload();
+            boolean btnEnabled = !entry.queued && !entry.completed
+                    && (com.micaftic.morpher.client.upload.YsmUploadClientBridge.isChannelAvailable()
+                        || (ClientModelManager.isOysmServer() && ClientModelManager.isAllowUpload()));
             int btnBg = btnEnabled ? (mouseX >= btnX && mouseX <= btnX + 60 && mouseY >= btnY && mouseY <= btnY + 16 ? 0xFF2E7D32 : 0xFF1B5E20) : 0xFF424242;
             g.fill(btnX, btnY, btnX + 60, btnY + 16, btnBg);
             Component btnLabel = Component.translatable("gui.sparkle_morpher.upload_custom_folder.upload_one");
@@ -605,10 +611,11 @@ public class CustomFolderUploadScreen extends Screen implements ModelUploadSessi
 
     private void renderEmptyState(GuiGraphics g, int listTop, int listBottom) {
         Component msg;
-        if (!ClientModelManager.isOysmServer()) {
+        boolean uploadChannel = com.micaftic.morpher.client.upload.YsmUploadClientBridge.isChannelAvailable();
+        if (!ClientModelManager.isOysmServer() && !uploadChannel) {
             msg = Component.translatable("gui.sparkle_morpher.upload_custom_folder.disabled_reason.handshake")
                     .copy().withStyle(ChatFormatting.GRAY);
-        } else if (!ClientModelManager.isAllowUpload()) {
+        } else if (!ClientModelManager.isAllowUpload() && !uploadChannel) {
             msg = Component.translatable("gui.sparkle_morpher.upload_custom_folder.disabled_reason.server_disabled")
                     .copy().withStyle(ChatFormatting.GRAY);
         } else {
