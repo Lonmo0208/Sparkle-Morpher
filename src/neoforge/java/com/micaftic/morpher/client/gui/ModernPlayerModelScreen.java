@@ -468,6 +468,9 @@ public class ModernPlayerModelScreen extends Screen {
             renderChip(g, listX, filtersY, 38, Component.translatable("gui.sparkle_morpher.model_panel.filter.all"), STATE.modelFilter == ModelPanelState.ModelFilter.ALL, () -> setModelFilter(ModelPanelState.ModelFilter.ALL));
             renderChip(g, listX + 42, filtersY, 42, Component.translatable("gui.sparkle_morpher.model_panel.filter.auth"), STATE.modelFilter == ModelPanelState.ModelFilter.AUTH, () -> setModelFilter(ModelPanelState.ModelFilter.AUTH));
             renderChip(g, listX + 88, filtersY, 38, Component.translatable("gui.sparkle_morpher.model_panel.filter.star"), STATE.modelFilter == ModelPanelState.ModelFilter.STAR, () -> setModelFilter(ModelPanelState.ModelFilter.STAR));
+            int sourceY = filtersY + 16;
+            renderChip(g, listX, sourceY, 42, Component.translatable("gui.sparkle_morpher.model_panel.source.local"), STATE.modelSource == ModelPanelState.ModelSource.LOCAL, () -> setModelSource(ModelPanelState.ModelSource.LOCAL));
+            renderChip(g, listX + 46, sourceY, 48, Component.translatable("gui.sparkle_morpher.model_panel.source.server"), STATE.modelSource == ModelPanelState.ModelSource.SERVER, () -> setModelSource(ModelPanelState.ModelSource.SERVER));
             boolean stackedControls = listW < 260;
             int actionsX = stackedControls ? listX : Math.max(listX, Math.min(listX + listW - 120, listX + 132));
             int actionsY = stackedControls ? y + 42 : y + 22;
@@ -487,6 +490,8 @@ public class ModernPlayerModelScreen extends Screen {
             renderChip(g, x + 8, y + 104, 38, Component.translatable("gui.sparkle_morpher.model_panel.filter.all"), STATE.modelFilter == ModelPanelState.ModelFilter.ALL, () -> setModelFilter(ModelPanelState.ModelFilter.ALL));
             renderChip(g, x + 50, y + 104, 42, Component.translatable("gui.sparkle_morpher.model_panel.filter.auth"), STATE.modelFilter == ModelPanelState.ModelFilter.AUTH, () -> setModelFilter(ModelPanelState.ModelFilter.AUTH));
             renderChip(g, x + 96, y + 104, 38, Component.translatable("gui.sparkle_morpher.model_panel.filter.star"), STATE.modelFilter == ModelPanelState.ModelFilter.STAR, () -> setModelFilter(ModelPanelState.ModelFilter.STAR));
+            renderChip(g, x + 8, y + 122, 42, Component.translatable("gui.sparkle_morpher.model_panel.source.local"), STATE.modelSource == ModelPanelState.ModelSource.LOCAL, () -> setModelSource(ModelPanelState.ModelSource.LOCAL));
+            renderChip(g, x + 54, y + 122, 48, Component.translatable("gui.sparkle_morpher.model_panel.source.server"), STATE.modelSource == ModelPanelState.ModelSource.SERVER, () -> setModelSource(ModelPanelState.ModelSource.SERVER));
             drawSection(g, Component.translatable("gui.sparkle_morpher.model_panel.actions"), x + 8, y + 136);
             renderIconButton(g, mouseX, mouseY, x + 8, y + 152, IconGlyph.IMPORT, Component.translatable("gui.sparkle_morpher.import.tooltip"), () -> openImportPanel());
             renderIconButton(g, mouseX, mouseY, x + 32, y + 152, IconGlyph.FOLDER, Component.translatable("gui.sparkle_morpher.open_model_folder.open"), this::openModelFolder);
@@ -1182,6 +1187,9 @@ public class ModernPlayerModelScreen extends Screen {
         for (var entry : ClientModelManager.getModelAssemblyMap().entrySet()) {
             String modelId = entry.getKey();
             ModelAssembly assembly = entry.getValue();
+            if (!matchesModelSource(modelId)) {
+                continue;
+            }
             if (!searching && !isDirectModel(STATE.currentPath, modelId)) {
                 continue;
             }
@@ -1196,6 +1204,7 @@ public class ModernPlayerModelScreen extends Screen {
         }
         for (String modelId : ClientModelManager.getAvailableModelIds()) {
             if (ClientModelManager.getModelAssemblyMap().containsKey(modelId)) continue;
+            if (!matchesModelSource(modelId)) continue;
             if (!searching && !isDirectModel(STATE.currentPath, modelId)) continue;
             boolean authModel = ClientModelManager.isAuthModel(modelId);
             if (STATE.modelFilter == ModelPanelState.ModelFilter.STAR && !stars.contains(modelId)) continue;
@@ -1222,6 +1231,14 @@ public class ModernPlayerModelScreen extends Screen {
             case ALL -> true;
             case AUTH -> auth.contains(modelId) || !assembly.getTextureRegistry().isAuthModel();
             case STAR -> stars.contains(modelId);
+        };
+    }
+
+    private boolean matchesModelSource(String modelId) {
+        return switch (STATE.modelSource) {
+            case ALL -> true;
+            case LOCAL -> ClientModelManager.isLocalOnlyModel(modelId);
+            case SERVER -> !ClientModelManager.isLocalOnlyModel(modelId);
         };
     }
 
@@ -1313,6 +1330,8 @@ public class ModernPlayerModelScreen extends Screen {
             ClientModelManager.rememberSelectedModel(modelId, textureId);
             if (ClientModelManager.isLocalOnlyModel(modelId)) {
                 cap.initModelWithTexture(modelId, textureId);
+                // 服务器上选择本地模型：其他人看不到，改成跟随服务器给的模型由其他玩家展示。
+                warnLocalModelVisibility();
             } else if (NetworkHandler.isClientConnected()) {
                 if (ClientModelManager.isLocalOnlyModel(cap.getModelId())) {
                     cap.initModelWithTexture(modelId, textureId);
@@ -1829,6 +1848,23 @@ public class ModernPlayerModelScreen extends Screen {
     private void setModelFilter(ModelPanelState.ModelFilter filter) {
         STATE.modelFilter = filter;
         STATE.modelScroll = 0;
+    }
+
+    private void setModelSource(ModelPanelState.ModelSource source) {
+        STATE.modelSource = source;
+        STATE.modelScroll = 0;
+    }
+
+    private void warnLocalModelVisibility() {
+        if (!NetworkHandler.isClientConnected()) {
+            return;
+        }
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player == null) {
+            return;
+        }
+        player.sendSystemMessage(Component.translatable("gui.sparkle_morpher.model_panel.local_model_warning")
+                .withStyle(ChatFormatting.YELLOW, ChatFormatting.ITALIC));
     }
 
     private void navigateUp() {

@@ -22,6 +22,8 @@ public class PlayerBaseAnimationPredicate implements IAnimationPredicate<CustomP
                 playerEntity.enableModel();
                 event.getController().stopTransition();
             }
+            // 标记轮盘动画已真正开始播放，供 afterSetupAnim 判断"播放完毕"而非"从未开始"。
+            playerEntity.markSwitchAnimationStarted();
             return IAnimationPredicate.predicate(event, playerEntity.getSelectedModelId());
         }
         return PlayState.STOP;

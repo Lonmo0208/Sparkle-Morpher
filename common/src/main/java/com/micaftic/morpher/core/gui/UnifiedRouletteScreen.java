@@ -461,7 +461,7 @@ public class UnifiedRouletteScreen extends Screen {
             int iy = centerY - size / 2;
             RenderSystem.enableBlend();
             RenderSystem.defaultBlendFunc();
-            g.blit(tex, ix, iy, size, size, 0.0f, 0.0f, 64, 64, 64, 64);
+            g.blit(tex, ix, iy, size, size, 0.0f, 0.0f, 32, 32, 32, 32);
             RenderSystem.disableBlend();
         } else {
             Pie.draw(g, centerX, centerY, 0.0f, RouletteTheme.WHEEL_INNER_R, 0.0f, Pie.tau,
@@ -669,6 +669,10 @@ public class UnifiedRouletteScreen extends Screen {
         boolean online = NetworkHandler.isClientConnected();
         AnimationRouletteDebugLog.info("client select key={} online={} custom={} hoveredIndex={} model={} entityId={}",
                 key, online, usingCustomLayout, hoveredIndex, lastModelId, entity == null ? -1 : entity.getId());
+        // 先本地立即播放，保证点击后马上有反馈；服务端广播回来会再次 requestModelSwitch（幂等）。
+        if (player != null) {
+            PlayerCapability.get(player).ifPresent(cap -> cap.requestModelSwitch(key));
+        }
         if (online && entity != null) {
             if (usingCustomLayout) {
                 int realIndex = customOriginalIndexMap.getOrDefault(key, hoveredIndex);
@@ -685,9 +689,6 @@ public class UnifiedRouletteScreen extends Screen {
                 if (entity instanceof Player) NetworkHandler.sendToServer(new C2SPlayAnimationPacket(hoveredIndex, submenu, key));
                 else NetworkHandler.sendToServer(new C2SPlayAnimationPacket(hoveredIndex, submenu, entity.getId(), key));
             }
-        } else if (player != null) {
-            AnimationRouletteDebugLog.info("client local fallback key={} model={}", key, lastModelId);
-            PlayerCapability.get(player).ifPresent(cap -> cap.requestModelSwitch(key));
         }
         if (player != null && GeneralConfig.PRINT_ANIMATION_ROULETTE_MSG.get()) {
             player.sendSystemMessage(Component.translatable("message.sparkle_morpher.model.animation_roulette.play", key));

@@ -70,7 +70,11 @@ public class PlayerStateSynchronizer {
     }
 
     private void trySendSync(ServerPlayer serverPlayer) {
-        if (!this.syncMessage.isEmpty() && this.tickCounter.tryIncrement()) {
+        trySendSync(serverPlayer, false);
+    }
+
+    private void trySendSync(ServerPlayer serverPlayer, boolean force) {
+        if (!this.syncMessage.isEmpty() && (force || this.tickCounter.tryIncrement())) {
             NetworkHandler.sendToTrackingEntityAndSelf(this.syncMessage, serverPlayer);
             this.syncMessage = new S2CSyncPlayerStatePacket(serverPlayer.getId());
         }
@@ -155,7 +159,9 @@ public class PlayerStateSynchronizer {
             this.syncedModelId = modelId;
             getOrCreateSyncMessage(serverPlayer, sendNow).setModelSwitch(modelId);
             if (sendNow) {
-                trySendSync(serverPlayer);
+                // 动画播放是玩家显式操作，必须绕过节流立即广播，
+                // 否则会被 tickCounter 限流吞掉，表现为"要点好几次才播放"。
+                trySendSync(serverPlayer, true);
             }
         }
     }

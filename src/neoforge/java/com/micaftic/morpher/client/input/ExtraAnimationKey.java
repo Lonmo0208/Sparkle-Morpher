@@ -132,6 +132,8 @@ public final class ExtraAnimationKey {
 
             int realIndex = indexMap != null ? indexMap.getOrDefault(rouletteKey, slot) : slot;
             String realCategory = categoryMap != null ? categoryMap.getOrDefault(rouletteKey, StringPool.EMPTY) : StringPool.EMPTY;
+            // 先本地立即播放（点击即生效），再发服务端包同步其他玩家（幂等，广播回来重复设置无害）。
+            cap.requestModelSwitch(rouletteKey);
             NetworkHandler.sendToServer(new C2SPlayAnimationPacket(realIndex, realCategory, rouletteKey));
         });
     }

@@ -13,6 +13,12 @@ final class ModelPanelState {
         STAR
     }
 
+    enum ModelSource {
+        ALL,
+        LOCAL,
+        SERVER
+    }
+
     enum SecondaryPanel {
         NONE,
         SITES,
@@ -32,6 +38,7 @@ final class ModelPanelState {
 
     Tab activeTab = Tab.MODEL;
     ModelFilter modelFilter = ModelFilter.ALL;
+    ModelSource modelSource = ModelSource.ALL;
     SettingGroup settingGroup = SettingGroup.GENERAL;
     SecondaryPanel secondaryPanel = SecondaryPanel.NONE;
     String modelSearchText = "";

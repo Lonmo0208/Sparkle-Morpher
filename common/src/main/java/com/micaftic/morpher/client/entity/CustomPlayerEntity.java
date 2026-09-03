@@ -32,6 +32,12 @@ public abstract class CustomPlayerEntity extends LivingAnimatable<Player> implem
 
     public boolean isDisabled;
 
+    /** 尚未成功解析的轮盘动画请求（延迟重试，直到模型就绪/动画名可解析）。 */
+    private String pendingModelSwitch;
+
+    /** 轮盘动画是否已经真正开始播放过（区分"从未播放"与"播放完回到 IDLE"）。 */
+    private boolean switchAnimationStarted;
+
     private List<IValue> syncIValues;
 
     public CustomPlayerEntity(Player player, boolean isLocalPlayer, boolean isActive) {
@@ -39,6 +45,8 @@ public abstract class CustomPlayerEntity extends LivingAnimatable<Player> implem
         this.isModelSwitching = false;
         this.selectedModelId = "idle";
         this.isDisabled = false;
+        this.pendingModelSwitch = null;
+        this.switchAnimationStarted = false;
         this.syncIValues = null;
         this.isLocalPlayer = isLocalPlayer;
         if (player instanceof LocalPlayer) {
@@ -63,6 +71,8 @@ public abstract class CustomPlayerEntity extends LivingAnimatable<Player> implem
         this.isModelSwitching = false;
         this.selectedModelId = "idle";
         this.isDisabled = false;
+        this.pendingModelSwitch = null;
+        this.switchAnimationStarted = false;
     }
 
     @Override
@@ -94,22 +104,22 @@ public abstract class CustomPlayerEntity extends LivingAnimatable<Player> implem
             this.selectedModelId = animationName;
             this.isModelSwitching = true;
             this.isDisabled = true;
+            this.switchAnimationStarted = false;
+            this.pendingModelSwitch = null;
             return;
         }
-        // 诊断：轮盘发来的动画 key 在当前模型的 mainAnimations 中不存在时，
-        // 播放链会静默放弃（这正是"部分模型点了轮盘没有动作"的直接原因）。
-        // 这里打印一次告警，暴露真正缺失的 key 以及该模型可用的动画名，
-        // 便于确认根因（例如 legacy extra_animation_names 合成的 "extraN" 与
-        // 真实动画名不一致，或 ysm.json 引用了不存在的 extraN）。
+        // 轮盘发来的动画 key 在当前已加载模型的动画列表中暂时不存在：
+        // 可能是模型还在异步加载、或服务端/客户端模型定义短暂不一致。
+        // 不再静默放弃，而是保留为 pending，后续帧模型就绪后再重试解析。
+        this.pendingModelSwitch = str;
         if (AnimationRouletteDebugLog.enabled() && str != null && !str.isBlank() && !"idle".equals(str)) {
             try {
                 YesSteveModel.LOGGER.warn(
-                        "[SM] 轮盘动画 '{}' 在当前模型的动画列表中不存在，已忽略播放；该模型可用动画: {}",
+                        "[SM] 轮盘动画 '{}' 当前无法解析，已挂起等待模型就绪后重试；该模型可用动画: {}",
                         str, getModelAssembly().getAnimationBundle().getMainAnimations().keySet());
             } catch (Exception ignored) {
             }
         }
-        this.isModelSwitching = false;
     }
 
     private @Nullable String resolvePlayableAnimation(String animationName) {
@@ -164,23 +174,47 @@ public abstract class CustomPlayerEntity extends LivingAnimatable<Player> implem
 
     public void clearModelSwitch() {
         this.isModelSwitching = false;
+        this.switchAnimationStarted = false;
+        this.pendingModelSwitch = null;
     }
 
     @Override
     public void setupAnim(float seekTime, boolean isFirstPerson) {
         super.setupAnim(seekTime, isFirstPerson);
         getEvaluationContext().setRoamingProperties(getServerVarContainer());
+        // 模型就绪后重试挂起的轮盘动画请求（模型异步加载 / 服务端模型短暂不一致场景）。
+        if (this.pendingModelSwitch != null) {
+            String animationName = resolvePlayableAnimation(this.pendingModelSwitch);
+            if (animationName != null) {
+                AnimationRouletteDebugLog.info("client pending playback resolved={} requested={}",
+                        animationName, this.pendingModelSwitch);
+                this.selectedModelId = animationName;
+                this.isModelSwitching = true;
+                this.isDisabled = true;
+                this.switchAnimationStarted = false;
+                this.pendingModelSwitch = null;
+            }
+        }
     }
 
     @Override
     public void afterSetupAnim(float seekTime, boolean isFirstPerson) {
         super.afterSetupAnim(seekTime, isFirstPerson);
-        if (this.isLocalPlayer && isFirstPerson && isModelSwitching() && getAnimationState(getCapControllerKey()) == AnimationState.IDLE) {
+        // 只在轮盘动画确实播放过、且播放完毕回到 IDLE 时才清状态并通知服务器停止。
+        // 若动画从未开始（switchAnimationStarted 仍为 false），不能清状态/发停止包，
+        // 否则点击后动画尚未真正播放就被自己掐断（表现为"要点好几次才播"）。
+        if (this.isLocalPlayer && isFirstPerson && isModelSwitching() && this.switchAnimationStarted
+                && getAnimationState(getCapControllerKey()) == AnimationState.IDLE) {
             clearModelSwitch();
             if (NetworkHandler.isClientConnected()) {
                 NetworkHandler.sendToServer(C2SPlayAnimationPacket.createDefault());
             }
         }
+    }
+
+    /** 标记轮盘动画已真正开始播放（由播放 predicate 在成功启动动画时调用）。 */
+    public void markSwitchAnimationStarted() {
+        this.switchAnimationStarted = true;
     }
 
     private String getCapControllerKey() {
