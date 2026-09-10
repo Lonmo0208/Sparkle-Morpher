@@ -73,19 +73,21 @@ public abstract class GeoEntity<T extends Entity> extends AnimatableEntity<T> {
 
     @Override
     public PhysicsManager getPhysicsManager() {
-        if (ModelPreviewRenderer.isPreview()) {
+        com.micaftic.morpher.client.render.RenderContext.PhysicsDomain physicsDomain =
+                com.micaftic.morpher.client.render.RenderContext.physicsDomain();
+        if (physicsDomain == com.micaftic.morpher.client.render.RenderContext.PhysicsDomain.PREVIEW) {
             if (this.previewBones == null) {
                 this.previewBones = new PhysicsManager();
             }
             return this.previewBones;
         }
-        if (com.micaftic.morpher.client.render.RenderContext.isGuiPreview()) {
+        if (physicsDomain == com.micaftic.morpher.client.render.RenderContext.PhysicsDomain.EXTRA_PLAYER) {
             if (this.extraPlayerBones == null) {
                 this.extraPlayerBones = new PhysicsManager();
             }
             return this.extraPlayerBones;
         }
-        if (ModelPreviewRenderer.isFirstPerson()) {
+        if (physicsDomain == com.micaftic.morpher.client.render.RenderContext.PhysicsDomain.FIRST_PERSON) {
             return this.physicsManager;
         }
         if (this.bones == null) {
@@ -348,27 +350,25 @@ public abstract class GeoEntity<T extends Entity> extends AnimatableEntity<T> {
             }
             return null;
         }
-        boolean isGuiPreview = ModelPreviewRenderer.isPreview() || com.micaftic.morpher.client.render.RenderContext.isGuiPreview();
-        if (isGuiPreview || this instanceof com.micaftic.morpher.capability.PlayerCapability) {
-            if (this.modelFuture != null) {
+        boolean isGuiPreview = com.micaftic.morpher.client.render.RenderContext.isAnyPreview();
+        if (!isGuiPreview) {
+            int renderFrameId = AnimationFrameProfiler.getRenderFrameId();
+            if (this.modelFuture != null && this.asyncSubmitFrameId != renderFrameId) {
+                // The pending task belongs to a frame in which this entity was not rendered;
+                // its time base is stale. Discard it and submit a fresh task below.
                 awaitAsyncResult();
             }
-            return super.processAnimationImpl(partialTick, isFirstPerson);
-        }
-        // First-person arm (PlayerGeoEntity): async pipeline, submit only while actually rendered
-        int renderFrameId = AnimationFrameProfiler.getRenderFrameId();
-        if (this.modelFuture != null && this.asyncSubmitFrameId != renderFrameId) {
-            // The pending task belongs to a frame in which this entity was not rendered;
-            // its time base is stale. Discard it and submit a fresh task below.
-            awaitAsyncResult();
-        }
-        if (this.modelFuture == null && this.asyncSubmitFrameId != renderFrameId) {
-            submitAsyncUpdate(partialTick);
-        }
-        if (this.modelFuture != null) {
-            AnimationEvent<?> event = awaitAsyncResult();
-            if (event != null) {
-                return event;
+            if (this.modelFuture == null && this.asyncSubmitFrameId != renderFrameId) {
+                // Submit only while the entity is actually being rendered this frame. Keeping the
+                // worker queue bounded by the visible set (and submit order equal to render order)
+                // keeps frame pacing regular instead of stalling on accumulated background tasks.
+                submitAsyncUpdate(partialTick);
+            }
+            if (this.modelFuture != null) {
+                AnimationEvent<?> event = awaitAsyncResult();
+                if (event != null) {
+                    return event;
+                }
             }
         }
         return super.processAnimationImpl(partialTick, isFirstPerson);

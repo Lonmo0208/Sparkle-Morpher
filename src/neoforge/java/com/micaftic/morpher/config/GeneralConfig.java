@@ -34,6 +34,7 @@ public class GeneralConfig {
     public static net.neoforged.neoforge.common.ModConfigSpec.EnumValue<NativeSimdPolicy> NATIVE_SIMD_POLICY;
 
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue DISABLE_MODEL_GLOW_IN_SHADERPACK;
+    public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue DISABLE_MODEL_FACE_CULLING;
 
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue ANIMATION_DISTANCE_LOD;
 
@@ -44,6 +45,8 @@ public class GeneralConfig {
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue ANIMATION_FRAME_PROFILER;
 
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue ANIMATION_DEBUG_LOG;
+
+    public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue DEVELOPER_STATE_WRITEBACK;
 
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue ANIMATION_ROULETTE_DEBUG_LOG;
 
@@ -149,6 +152,8 @@ public class GeneralConfig {
         NATIVE_SIMD_POLICY = builder.defineEnum("NativeSimdPolicy", NativeSimdPolicy.AGGRESSIVE);
         builder.comment("Render ysmGlow bones with normal entity lighting while a shader pack is active.");
         DISABLE_MODEL_GLOW_IN_SHADERPACK = builder.define("DisableModelGlowInShaderpack", true);
+        builder.comment("Disable the per-cube face cull baked into models. Turn this on if a model loses faces/parts at certain angles. Changing it reloads models.");
+        DISABLE_MODEL_FACE_CULLING = builder.define("DisableModelFaceCulling", false);
         ROULETTE_CONTENT_MODE = builder.defineEnum("RouletteContentMode", RouletteContentMode.ORIGINAL);
         builder.comment("The amount of volume when the animation is played.");
         SOUND_VOLUME = builder.defineInRange("SoundVolume", 100.0d, 0.0d, 100.0d);
@@ -164,6 +169,8 @@ public class GeneralConfig {
         ANIMATION_FRAME_PROFILER = builder.define("AnimationFrameProfiler", false);
         builder.comment("Verbose per-evaluation [SM-ANIM] debug log. Very noisy, default off.");
         ANIMATION_DEBUG_LOG = builder.define("AnimationDebugLog", false);
+        builder.comment("Allow panel-state writeback in the developer group. Default off; enabling it lets a model author reproduce a captured panel state. Client-side only.");
+        DEVELOPER_STATE_WRITEBACK = builder.define("DeveloperStateWriteback", false);
         builder.comment("Print [SM-ROULETTE] diagnostics for animation roulette clicks, server resolution, and client playback resolution. Default off.");
         ANIMATION_ROULETTE_DEBUG_LOG = builder.define("AnimationRouletteDebugLog", false);
         builder.comment("Print [SM-INPUT] diagnostics for attack/use mouse clicks, key state, vanilla swing/use state, and local animation pulses.");
