@@ -42,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.List;
 
 import jp.nyatla.nymmd.MmdException;
 import jp.nyatla.nymmd.MmdMotionPlayerGL2;
@@ -53,10 +54,10 @@ import jp.nyatla.nymmd.MmdVmdMotionMc;
  * {@link SlashBladeModState#LOADED} first so this class is never classloaded
  * while the mod is absent.
  *
- * <p>Rendering mirrors SlashBlade's own {@code LayerMainBlade}: in third person
- * the blade is drawn by that player layer, whose transform is MMD-motion driven
- * relative to the entity origin, so the same math stays valid when the player
- * body is replaced by a morph model.</p>
+ * <p>Rendering attaches to the morph model's blade locators when available. This
+ * keeps standby, jumping and running poses aligned with the model hand and its
+ * scale. The original entity-space MMD hardpoint path remains as a fallback for
+ * models without hand locator data.</p>
  */
 public final class SlashBladeBridge {
 
@@ -308,12 +309,17 @@ public final class SlashBladeBridge {
         return bone == null || (bone.getScaleX() == 0.0f && bone.getScaleY() == 0.0f && bone.getScaleZ() == 0.0f);
     }
 
-    public static void renderMainHandBlade(LivingEntity livingEntity, ItemStack itemStack, float partialTick, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight) {
+    public static void renderMainHandBlade(LivingEntity livingEntity, AnimatedGeoModel model, ItemStack itemStack,
+                                           float partialTick, PoseStack poseStack, MultiBufferSource bufferSource,
+                                           int packedLight) {
         Optional<ISlashBladeState> stateOptional = BladeStateAccess.of(itemStack);
         if (stateOptional.isEmpty()) {
             return;
         }
         ISlashBladeState state = stateOptional.get();
+        if (renderAttachedToModel(livingEntity, model, itemStack, state, partialTick, poseStack, bufferSource, packedLight)) {
+            return;
+        }
         MmdMotionPlayerGL2 player = getMotionPlayer();
         if (player == null) {
             return;
@@ -408,6 +414,45 @@ public final class SlashBladeBridge {
                 }
             }
         }
+    }
+
+    private static boolean renderAttachedToModel(LivingEntity livingEntity, AnimatedGeoModel model, ItemStack itemStack,
+                                                  ISlashBladeState state, float partialTick, PoseStack poseStack,
+                                                  MultiBufferSource bufferSource, int packedLight) {
+        if (model == null) {
+            return false;
+        }
+        List<IBone> bladeLocator = model.bladeBones().isEmpty() ? model.leftHandBones() : model.bladeBones();
+        if (bladeLocator.isEmpty()) {
+            return false;
+        }
+        List<IBone> sheathLocator = model.sheathBones().isEmpty() ? bladeLocator : model.sheathBones();
+        ResourceLocation textureLocation = state.getTexture().orElse(DefaultResources.resourceDefaultTexture);
+        WavefrontObject obj = BladeModelManager.getInstance()
+                .getModel(state.getModel().orElse(DefaultResources.resourceDefaultModel));
+
+        try (MSAutoCloser ignored = MSAutoCloser.pushMatrix(poseStack)) {
+            RenderUtils.prepMatrixForLocator(poseStack, bladeLocator);
+            poseStack.mulPose(Axis.ZP.rotationDegrees(180.0f));
+            poseStack.scale((float) MODEL_SCALE_BASE, (float) MODEL_SCALE_BASE, (float) MODEL_SCALE_BASE);
+            String part = state.isBroken() ? "blade_damaged" : "blade";
+            BladeRenderState.renderOverrided(itemStack, obj, part, textureLocation, poseStack, bufferSource, packedLight);
+            BladeRenderState.renderOverridedLuminous(itemStack, obj,
+                    state.isBroken() ? BLADE_DAMAGED_LUMINOUS : BLADE_LUMINOUS, textureLocation, poseStack, bufferSource, packedLight);
+        }
+
+        try (MSAutoCloser ignored = MSAutoCloser.pushMatrix(poseStack)) {
+            RenderUtils.prepMatrixForLocator(poseStack, sheathLocator);
+            poseStack.mulPose(Axis.ZP.rotationDegrees(180.0f));
+            poseStack.scale((float) MODEL_SCALE_BASE, (float) MODEL_SCALE_BASE, (float) MODEL_SCALE_BASE);
+            BladeRenderState.renderOverrided(itemStack, obj, "sheath", textureLocation, poseStack, bufferSource, packedLight);
+            BladeRenderState.renderOverridedLuminous(itemStack, obj, SHEATH_LUMINOUS, textureLocation, poseStack, bufferSource, packedLight);
+            if (state.isCharged(livingEntity)) {
+                BladeRenderState.renderChargeEffect(itemStack, (float) livingEntity.tickCount + partialTick, obj, "effect",
+                        ResourceLocation.parse("textures/entity/creeper/creeper_armor.png"), poseStack, bufferSource, packedLight);
+            }
+        }
+        return true;
     }
 
     public static void renderWaistBlade(ItemStack itemStack, LivingEntity livingEntity, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight) {

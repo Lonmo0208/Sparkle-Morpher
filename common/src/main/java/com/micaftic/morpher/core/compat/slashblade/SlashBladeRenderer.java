@@ -8,9 +8,9 @@ import net.minecraft.world.item.ItemStack;
 
 /**
  * Loader-neutral facade; see {@link SlashBladeCompat} for the gating scheme.
- *
- * <p>第二/第三人称渲染采用模型骨骼锚点定位（复用 YSM 1.20 原版逻辑），
- * 而不是官方 MMD 版的原版实体坐标硬编码偏移，确保任意比例的自定义模型上位置正确。</p>
+ * The {@code model} parameter supplies the model-relative blade and hand
+ * locators so the renderer follows the transformed model rather than the
+ * vanilla player-sized entity space.
  */
 public final class SlashBladeRenderer {
 
@@ -21,7 +21,7 @@ public final class SlashBladeRenderer {
         if (!SlashBladeModState.LOADED) {
             return;
         }
-        SlashBladeBridge.renderMainHandBladeOnBones(entity, stack, partialTick, poseStack, bufferSource, packedLight, model);
+        SlashBladeBridge.renderMainHandBlade(entity, model, stack, partialTick, poseStack, bufferSource, packedLight);
     }
 
     public static void renderRightWaist(AnimatedGeoModel model, LivingEntity entity, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, ItemStack stack) {

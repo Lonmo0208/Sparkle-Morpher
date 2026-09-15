@@ -8,6 +8,7 @@ import com.micaftic.morpher.client.ClientModelManager;
 import com.micaftic.morpher.client.PrivacyMode;
 import com.micaftic.morpher.util.SmExecutors;
 import com.micaftic.morpher.client.entity.PlayerPreviewEntity;
+import com.micaftic.morpher.client.gui.metadata.ModelDisplayAssets;
 import com.micaftic.morpher.client.gui.resource.ModelRepoClient;
 import com.micaftic.morpher.client.gui.resource.ModelRepoEntry;
 import com.micaftic.morpher.client.gui.resource.ResourceDownloadManager;
@@ -15,8 +16,11 @@ import com.micaftic.morpher.client.gui.resource.ResourceStationConfig;
 import com.micaftic.morpher.client.model.ModelAssembly;
 import com.micaftic.morpher.client.renderer.ModelPreviewRenderer;
 import com.micaftic.morpher.client.renderer.RendererManager;
+import com.micaftic.morpher.client.texture.OuterFileTexture;
+import com.micaftic.morpher.client.upload.IResourceLocatable;
 import com.micaftic.morpher.client.upload.ModelImportFilePicker;
 import com.micaftic.morpher.client.upload.ModelUploadSession;
+import com.micaftic.morpher.client.upload.UploadManager;
 import com.micaftic.morpher.config.ExtraPlayerRenderConfig;
 import com.micaftic.morpher.config.GeneralConfig;
 import com.micaftic.morpher.config.LoadingStateConfig;
@@ -38,6 +42,7 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.neoforged.neoforge.common.ModConfigSpec;
@@ -56,10 +61,12 @@ import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -90,30 +97,65 @@ public class ModernPlayerModelScreen extends Screen {
     private static final int MODEL_PAGE_BUTTON_WIDTH = 46;
     private static final int MODEL_PAGE_BUTTON_HEIGHT = 18;
     private static final int ICON = 18;
-    private static final ExecutorService RESOURCE_EXECUTOR = SmExecutors.pool(SmExecutors.Pool.MODEL_IO);
 
+    // ---- 目录卡片（3D 卡片网格）视觉常量 ----
+    private static final int CARD_BASE = 0xFF434242;
+    private static final int CARD_BASE_HOVER = 0xFF505755;
+    private static final int CARD_SELECT = 0xFF58636E;
+    private static final int CARD_FOLDER = 0xFF9B51E0;
+    private static final int CARD_FOLDER_HOVER = 0xFFB17BEA;
+    private static final int CARD_NAME_TEXT = 0xFFF3EFE0;
+    private static final int CARD_DIM = 0x9F222222;
+    private static final int CARD_NAME_BG = 0xC6000000;
+
+    /**
+     * 卡片封面贴图像素尺寸缓存。键为弱引用，贴图回收后随之失效；
+     * 仅渲染线程读写，用 synchronized 保护跨线程可见性。
+     */
+    private static final java.util.Map<AbstractTexture, int[]> COVER_DIMENSIONS = new WeakHashMap<>();
     private final List<Hit> hits = new ArrayList<>();
-    private final List<ModelRepoEntry> resourceEntries = new ArrayList<>();
     private final Set<String> selectedModelIds = new LinkedHashSet<>();
-    private final Set<String> selectedResourceUrls = new LinkedHashSet<>();
-    private final Queue<ModelImportFilePicker.PickedFile> pendingImports = new ArrayDeque<>();
     private final PlayerPreviewEntity previewEntity = new PlayerPreviewEntity();
+    /**
+     * 卡片网格的实时 3D 预览实体池，按「当前页内的槽位」索引。
+     *
+     * <p>每张可见卡都渲染实时小人——模型本身就是卡面（多数模型并不内嵌 gui_background
+     * 之类的静态卡图，只渲染悬停/选中两张会让其余卡面全空）。开销靠两处封顶：
+     * 池子大小 ≤ {@link ModelPickerLayout#MAX_COLS}×{@link ModelPickerLayout#MAX_ROWS}（每页容量），
+     * 翻页/改选时槽位按需换绑模型，不会随目录规模增长。</p>
+     */
+    private final List<PlayerPreviewEntity> cardPreviews = new ArrayList<>();
+    private final List<String> cardPreviewModels = new ArrayList<>();
+    private final List<String> cardPreviewTextures = new ArrayList<>();
+    /** 上一帧实际生效的网格形态；形态变化时重置滚动量（页号与行号语义不通用）。 */
+    private ModelPickerLayout.GridMode lastGridMode;
     private final BiConsumer<String, String> modelSelectionTarget;
+    /**
+     * 本次选择是否写入「玩家自己的模型选择」（{@link ClientModelManager#rememberSelectedModel} →
+     * {@code LocalModelSelectionStore} 本地持久化）。
+     *
+     * <p>只有玩家自己的面板为 true。女仆 / NPC 等非玩家目标只改目标实体的模型，若也写进玩家选择，
+     * 下次玩家进服时 {@code restorePersistedModelSelection} 会把目标实体的模型自动套到玩家身上。
+     * 第三方整合（NPC 面板等）可用 {@link #setRememberPlayerSelection(boolean)} 精确覆写。</p>
+     */
+    private boolean rememberPlayerSelection;
     private ModelPanelLayout layout;
     private EditBox modelSearchBox;
     private EditBox resourceSearchBox;
     private EditBox siteEditBox;
     private EditBox categoryEditBox;
-    private ResourceStationConfig.State resourceConfig = ResourceStationConfig.load();
     private Component status = Component.empty();
     private ChatFormatting statusColor = ChatFormatting.GRAY;
-    private boolean localImportInProgress;
     private boolean resourceStatusMessage;
-    private int screenGeneration;
     private boolean draggingResourceScroll;
     private String previewModelId = "";
     private String previewTextureId = "";
     private String pendingModelApplyId;
+    /**
+     * 1.2.7 §24.7：本屏的服务层。所有对底层系统（资源站网络、下载队列、导入/上传会话、
+     * 模型目录读写、配置持久化）的调用都经此转发 —— Screen 不再直接操作底层系统。
+     */
+    private final ModernPlayerModelScreenController controller;
 
     private enum IconGlyph {
         MODEL(0, 0),
@@ -169,8 +211,37 @@ public class ModernPlayerModelScreen extends Screen {
     public ModernPlayerModelScreen(BiConsumer<String, String> modelSelectionTarget, String stateKey) {
         super(Component.translatable("key.sparkle_morpher.player_model.desc"));
         this.modelSelectionTarget = modelSelectionTarget;
+        // 非玩家目标（女仆 / NPC）默认不写玩家选择，避免把目标实体的模型当成玩家自己的模型
+        this.rememberPlayerSelection = modelSelectionTarget == null;
         this.STATE = resolveState(stateKey);
         this.stateKeyValue = stateKey == null || stateKey.isBlank() ? "self" : stateKey;
+        // §24.7：服务层持有全部底层系统交互；Host 回调只回填 footer 状态与重建控件。
+        this.controller = new ModernPlayerModelScreenController(this.STATE, new ModernPlayerModelScreenController.Host() {
+            @Override
+            public void postStatus(Component component, ChatFormatting color) {
+                setStatus(component, color);
+            }
+
+            @Override
+            public void postResourceStatus(Component component, ChatFormatting color) {
+                setResourceStatus(component, color);
+            }
+
+            @Override
+            public void requestRerender() {
+                ModernPlayerModelScreen.this.init();
+            }
+        });
+    }
+
+    /** 本次选择是否记忆为玩家自己的模型选择（默认：只有玩家自己的面板为 true）。 */
+    public boolean shouldRememberPlayerSelection() {
+        return this.rememberPlayerSelection;
+    }
+
+    /** 覆写本次选择是否记忆为玩家选择，供非玩家面板复用本界面时精确控制。 */
+    public void setRememberPlayerSelection(boolean value) {
+        this.rememberPlayerSelection = value;
     }
 
     private static ModelPanelState resolveState(String stateKey) {
@@ -258,7 +329,7 @@ public class ModernPlayerModelScreen extends Screen {
             int panelW = secondaryPanelW();
             this.siteEditBox = new EditBox(this.font, panelX + 16, panelY + 42, panelW - 32, 16, Component.translatable("gui.sparkle_morpher.model_panel.url"));
             this.siteEditBox.setMaxLength(2048);
-            this.siteEditBox.setValue(STATE.siteEditText.isBlank() ? this.resourceConfig.selectedUrl() : STATE.siteEditText);
+            this.siteEditBox.setValue(STATE.siteEditText.isBlank() ? this.controller.selectedSite() : STATE.siteEditText);
             this.siteEditBox.setTextColor(TEXT);
             addWidget(this.siteEditBox);
         } else if (STATE.secondaryPanel == ModelPanelState.SecondaryPanel.CATEGORIES) {
@@ -275,20 +346,30 @@ public class ModernPlayerModelScreen extends Screen {
 
     @Override
     public void removed() {
-        this.screenGeneration++;
+        this.controller.invalidateGeneration();
         this.STATE.secondaryPanel = ModelPanelState.SecondaryPanel.NONE;
-        ModelImportFilePicker.cancelPicking();
+        this.controller.cancelPicking();
+        // 释放卡片预览实体池持有的模型引用；本屏重开时会按需重建。
+        this.cardPreviewModels.clear();
+        this.cardPreviewTextures.clear();
+        for (PlayerPreviewEntity entity : this.cardPreviews) {
+            try {
+                entity.resetModel();
+            } catch (Exception ignored) {
+            }
+        }
+        this.cardPreviews.clear();
         super.removed();
     }
 
     @Override
     public void tick() {
         super.tick();
-        ResourceDownloadManager.tick();
-        pollImports();
+        this.controller.tickDownloads();
+        this.controller.pollImports();
         if (this.pendingModelApplyId != null) {
             String pendingId = this.pendingModelApplyId;
-            ClientModelManager.getModelContext(pendingId).ifPresent(assembly -> {
+            this.controller.lookupAssembly(pendingId).ifPresent(assembly -> {
                 this.pendingModelApplyId = null;
                 if (pendingId.equals(STATE.selectedModelId)) {
                     STATE.selectedTextureId = selectedTextureOrDefault(assembly);
@@ -320,9 +401,9 @@ public class ModernPlayerModelScreen extends Screen {
         STATE.activeTab = ModelPanelState.Tab.MODEL;
         STATE.secondaryPanel = ModelPanelState.SecondaryPanel.IMPORT;
         for (Path path : paths) {
-            enqueueImportPath(path);
+            this.controller.enqueueImportPath(path);
         }
-        startNextImportIfIdle();
+        this.controller.startNextImportIfIdle();
         init();
     }
 
@@ -580,7 +661,7 @@ public class ModernPlayerModelScreen extends Screen {
         if (!texture.isBlank()) {
             drawMuted(g, Component.literal(trim(texture, w)), x, y + 24);
         }
-        int count = ClientModelManager.getAvailableModelIds().size();
+        int count = this.controller.availableModelCount();
         drawMuted(g, Component.translatable("gui.sparkle_morpher.model_panel.loaded_count", count), x, y + 46);
     }
 
@@ -597,14 +678,81 @@ public class ModernPlayerModelScreen extends Screen {
 
     private void renderModelGrid(GuiGraphics g, int mouseX, int mouseY, int x, int y, int w, int h) {
         glassPanel(g, x, y, w, h);
-        Set<String> starredModels = starModels();
         List<ModelEntry> entries = collectModelEntries();
-        ModelListMetrics metrics = modelListMetrics(w, h, entries.size());
-        STATE.modelScroll = clamp(STATE.modelScroll, 0, metrics.maxScroll());
         if (entries.isEmpty()) {
             drawCentered(g, Component.translatable("gui.sparkle_morpher.model_panel.no_models"), x + w / 2, y + h / 2 - 4, MUTED);
             return;
         }
+        ModelPickerLayout.GridMode mode = gridMode(w, h);
+        if (mode == ModelPickerLayout.GridMode.CARDS) {
+            renderModelCards(g, mouseX, mouseY, entries, x, y, w, h);
+            return;
+        }
+        renderModelTextGrid(g, mouseX, mouseY, entries, x, y, w, h);
+    }
+
+    /**
+     * 当前生效的网格形态。形态只在 {@code pickerStyle} 变化或窗口尺寸变化时改变，
+     * 因此在生效形态切换的那一帧重置 {@code modelScroll}——卡片模式下它是页号、
+     * 文字网格下是像素滚动量，二者语义不通用，混用会出现页数错位。
+     */
+    private ModelPickerLayout.GridMode gridMode(int w, int h) {
+        ModelPickerLayout.Style style = pickerStyle();
+        ModelPickerLayout.GridMode mode = ModelPickerLayout.resolve(style, w, h);
+        if (mode != this.lastGridMode) {
+            STATE.modelScroll = 0;
+            this.lastGridMode = mode;
+        }
+        return mode;
+    }
+
+    /** 展示偏好：用户在本屏切换过就以本屏为准，否则读配置默认值。 */
+    private ModelPickerLayout.Style pickerStyle() {
+        if (!STATE.pickerStylePinned) {
+            ModelPickerLayout.Style configured = configuredPickerStyle();
+            if (configured != null) {
+                STATE.pickerStyle = configured;
+                STATE.pickerStylePinned = true;
+            }
+        }
+        return STATE.pickerStyle;
+    }
+
+    private static ModelPickerLayout.Style configuredPickerStyle() {
+        try {
+            GeneralConfig.ModelPickerStyle style = com.micaftic.morpher.core.config.ConfigPolicies.modelPickerStyle();
+            return style == null ? null : ModelPickerLayout.Style.valueOf(style.name());
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** AUTO → CARDS → LIST 循环；切到 LIST 后再次点击回到 AUTO。 */
+    private void cyclePickerStyle() {
+        ModelPickerLayout.Style next = switch (pickerStyle()) {
+            case AUTO -> ModelPickerLayout.Style.CARDS;
+            case CARDS -> ModelPickerLayout.Style.LIST;
+            case LIST -> ModelPickerLayout.Style.AUTO;
+        };
+        STATE.pickerStyle = next;
+        STATE.pickerStylePinned = true;
+        STATE.modelScroll = 0;
+    }
+
+    private Component pickerStyleLabel(ModelPickerLayout.Style style) {
+        String key = switch (style) {
+            case AUTO -> "gui.sparkle_morpher.model_panel.picker.auto";
+            case CARDS -> "gui.sparkle_morpher.model_panel.picker.cards";
+            case LIST -> "gui.sparkle_morpher.model_panel.picker.list";
+        };
+        return Component.translatable(key);
+    }
+
+    /** 经典图标+文字网格（AUTO 面积不足时的降级路径，也是 LIST 强制形态）。 */
+    private void renderModelTextGrid(GuiGraphics g, int mouseX, int mouseY, List<ModelEntry> entries, int x, int y, int w, int h) {
+        Set<String> starredModels = starModels();
+        ModelListMetrics metrics = modelListMetrics(w, h, entries.size());
+        STATE.modelScroll = clamp(STATE.modelScroll, 0, metrics.maxScroll());
         int start = STATE.modelScroll * metrics.cols();
         for (int i = 0; i < metrics.rows() * metrics.cols() && start + i < entries.size(); i++) {
             ModelEntry entry = entries.get(start + i);
@@ -636,6 +784,287 @@ public class ModernPlayerModelScreen extends Screen {
         }
     }
 
+    /**
+     * 目录卡片网格。整块按可用面积居中；每张可见模型卡都渲染实时 3D 小人（模型即卡面），
+     * 未就绪的懒加载模型先显示加载提示并在后台拉起。
+     */
+    private void renderModelCards(GuiGraphics g, int mouseX, int mouseY, List<ModelEntry> entries, int x, int y, int w, int h) {
+        ModelPickerLayout.Cards m = ModelPickerLayout.cards(w, h);
+        int pages = m.totalPages(entries.size());
+        STATE.modelScroll = clamp(STATE.modelScroll, 0, pages - 1);
+        int start = STATE.modelScroll * m.capacity();
+        int x0 = x + m.originX(w);
+        int y0 = y + m.originY(h);
+        Set<String> starred = starModels();
+        ensureCardPool(m.capacity());
+        int hoverIndex = -1;
+        for (int i = 0; i < m.capacity() && start + i < entries.size(); i++) {
+            int r = i / m.cols();
+            int c = i % m.cols();
+            int cx = x0 + c * (m.cellW() + ModelPickerLayout.CARD_GAP);
+            int cy = y0 + r * (m.cellH() + ModelPickerLayout.CARD_GAP);
+            if (inside(mouseX, mouseY, cx, cy, m.cellW(), m.cellH())) {
+                hoverIndex = start + i;
+                break;
+            }
+        }
+        for (int i = 0; i < m.capacity() && start + i < entries.size(); i++) {
+            int r = i / m.cols();
+            int c = i % m.cols();
+            int cx = x0 + c * (m.cellW() + ModelPickerLayout.CARD_GAP);
+            int cy = y0 + r * (m.cellH() + ModelPickerLayout.CARD_GAP);
+            boolean hover = start + i == hoverIndex;
+            renderModelCard(g, entries.get(start + i), i, cx, cy, m.cellW(), m.cellH(), hover, starred);
+        }
+    }
+
+    /** 把预览实体池扩到至少 size 个槽位；上限由每页容量常量决定，不会随目录规模增长。 */
+    private void ensureCardPool(int size) {
+        while (this.cardPreviews.size() < size) {
+            this.cardPreviews.add(new PlayerPreviewEntity());
+            this.cardPreviewModels.add("");
+            this.cardPreviewTextures.add("");
+        }
+    }
+
+    /** 取/换绑某槽位的预览实体；换模型或贴图时重初始化。失败返回 null（调用方回退图标）。 */
+    private PlayerPreviewEntity cardPreviewEntity(int slot, String modelId, String textureId) {
+        if (slot < 0 || slot >= this.cardPreviews.size()) {
+            return null;
+        }
+        PlayerPreviewEntity entity = this.cardPreviews.get(slot);
+        if (!modelId.equals(this.cardPreviewModels.get(slot)) || !Objects.equals(textureId, this.cardPreviewTextures.get(slot))) {
+            try {
+                entity.initModelWithTexture(modelId, textureId);
+            } catch (Exception e) {
+                return null;
+            }
+            this.cardPreviewModels.set(slot, modelId);
+            this.cardPreviewTextures.set(slot, textureId);
+        }
+        return entity;
+    }
+
+    /** 单张卡：底 → 封面/实时小人 → 名字条 → 角标 → 描边 → 点击区。 */
+    private void renderModelCard(GuiGraphics g, ModelEntry entry, int slot, int cx, int cy, int cw, int ch, boolean hover, Set<String> starredModels) {
+        boolean folder = entry.folder();
+        boolean selected = entry.modelId().equals(STATE.selectedModelId) || this.selectedModelIds.contains(entry.modelId());
+        boolean multiSelected = !folder && !entry.modelId().equals(STATE.selectedModelId) && this.selectedModelIds.contains(entry.modelId());
+        boolean starred = !folder && starredModels.contains(entry.modelId());
+        boolean locked = !folder && entry.locked();
+        int nameH = ModelPickerLayout.nameBandH(ch);
+        int coverH = Math.max(1, ch - nameH);
+
+        if (folder) {
+            fill(g, cx, cy, cw, ch, hover ? CARD_FOLDER_HOVER : CARD_FOLDER);
+        } else {
+            fill(g, cx, cy, cw, ch, selected ? CARD_SELECT : hover ? CARD_BASE_HOVER : CARD_BASE);
+        }
+
+        if (folder) {
+            drawFolderCover(g, entry, cx + 1, cy + 1, cw - 2, coverH - 1);
+        } else if (locked) {
+            int size = Math.min(26, Math.min(cw - 8, coverH - 8));
+            drawIconScaled(g, IconGlyph.LOCK, cx + Math.max(0, (cw - size) / 2), cy + Math.max(1, (coverH - size) / 2), size);
+        } else {
+            renderCardMonster(g, slot, entry.modelId(), cx, cy, cw, ch, coverH);
+        }
+
+        // 名字条压在封面之上，保证不被 3D 小人遮挡。
+        fill(g, cx, cy + coverH, cw, nameH, CARD_NAME_BG);
+        drawCardName(g, entry, cx, cy + coverH, cw, nameH, folder);
+
+        if (locked) {
+            fill(g, cx, cy, cw, ch, CARD_DIM);
+        } else if (!folder) {
+            if (multiSelected) {
+                drawIcon(g, IconGlyph.CHECK, cx + cw - 18, cy + 3);
+            } else if (starred) {
+                drawIcon(g, IconGlyph.STAR, cx + cw - 18, cy + 3);
+            }
+        }
+
+        border(g, cx, cy, cw, ch, selected ? RED : hover ? CARD_NAME_TEXT : 0x55FFFFFF);
+        hit(cx, cy, cw, ch, Component.literal(entry.title()), () -> clickModelEntry(entry));
+    }
+
+    /** 卡片名字条：单行居中；卡够高且有条目副标题时排两行。超长省略，悬停 tooltip 给全名。 */
+    private void drawCardName(GuiGraphics g, ModelEntry entry, int bx, int by, int cw, int nameH, boolean folder) {
+        int w = Math.max(6, cw - 6);
+        String title = trim(entry.title(), w);
+        String sub = entry.subtitle();
+        boolean twoLine = !folder && nameH >= 28 && sub != null && !sub.isEmpty() && !"folder".equals(sub);
+        int tx = bx + 3;
+        if (twoLine) {
+            g.drawString(this.font, Component.literal(title), tx, by + 3, folder ? 0xFF2B2B2B : CARD_NAME_TEXT, false);
+            g.drawString(this.font, Component.literal(trim(sub, w)), tx, by + nameH - this.font.lineHeight - 3, MUTED, false);
+        } else {
+            g.drawString(this.font, Component.literal(title), tx, by + Math.max(2, (nameH - this.font.lineHeight) / 2), folder ? 0xFF2B2B2B : CARD_NAME_TEXT, false);
+        }
+    }
+
+    /** 文件夹卡封面：ysm_pack.json 里的贴图，缺省用内置默认图标。 */
+    private void drawFolderCover(GuiGraphics g, ModelEntry entry, int x, int y, int w, int h) {
+        AbstractTexture texture = null;
+        try {
+            var pack = ClientModelManager.getModelPackMap().get(entry.modelId());
+            texture = pack == null ? null : pack.getTexture();
+        } catch (Exception ignored) {
+        }
+        if (!drawCoverImage(g, texture, x, y, w, h)) {
+            int size = Math.min(30, Math.min(w - 6, h - 6));
+            drawIconScaled(g, IconGlyph.FOLDER, x + Math.max(0, (w - size) / 2), y + Math.max(1, (h - size) / 2), size);
+        }
+    }
+
+    /**
+     * 卡片里的实时 3D 小人：YSM 卡面三层构图（背景图 → 模型 → 前景边框）的中间层。
+     * 走 {@link ModelPreviewRenderer#renderLivingEntityPreview} 的显式 yaw 重载（1.21.1 分支仍保留）。
+     */
+    private void renderCardMonster(GuiGraphics g, int slot, String modelId, int cx, int cy, int cw, int ch, int coverH) {
+        if (cw < 18 || coverH < 26) {
+            return;
+        }
+        // getModelContext 对懒模型会调度后台加载并返回 empty——正好用来「请求加载」；
+        // 落地后下一帧这里就拿到常驻 assembly，卡片自动升级为实时小人。
+        ModelAssembly asm = this.controller.assemblyOrNull(modelId);
+        if (asm == null) {
+            drawCardLoading(g, cx, cy, cw, coverH);
+            return;
+        }
+        // YSM 卡面是三层构图：背景图 → 实时模型 → 前景边框。背景整幅铺在整张卡上
+        // （含名字条区域），前景边框最后叠回，模型的头/脚就落在边框留白里，不会被裁。
+        ModelDisplayAssets assets = asm.getTextureRegistry();
+        AbstractTexture background = assets == null ? null : assets.getGuiBackground();
+        AbstractTexture foreground = assets == null ? null : assets.getGuiForeground();
+        boolean hasBackground = drawCoverImage(g, background, cx, cy, cw, ch);
+        if (!hasBackground) {
+            // 无卡图：退回前景（可能也是边框）或纯卡底色即可，无需额外处理。
+            drawCoverImage(g, foreground, cx, cy, cw, ch);
+        }
+        boolean drewFigure = false;
+        if (!asm.isGltf()) {
+            drewFigure = renderCardFigure(g, slot, modelId, asm, cx, cy, cw, coverH);
+        }
+        // 前景边框叠在小人之上（其中心透明，正好露出小人）；未被当作背景用过才叠。
+        if (foreground != null && foreground != background) {
+            drawCoverImage(g, foreground, cx, cy, cw, ch);
+        }
+        if (!drewFigure && !hasBackground && foreground == null) {
+            int size = Math.min(34, Math.min(cw - 8, coverH - 12));
+            drawIconScaled(g, IconGlyph.MODEL, cx + Math.max(0, (cw - size) / 2), cy + Math.max(2, (coverH - size) / 2), size);
+        }
+    }
+
+    /**
+     * 卡片内的实时小人。返回是否真的排了渲染。
+     *
+     * <p>缩放取「封面高 × {@link ModelPickerLayout#CARD_FIGURE_SCALE}」——与右侧详情栏同一比例，
+     * 保证整只模型落进卡面而不被上沿裁掉；预览盒用整块封面（而非居中正方形），
+     * 竖卡才不会在上下留出空档。</p>
+     */
+    private boolean renderCardFigure(GuiGraphics g, int slot, String modelId, ModelAssembly asm, int cx, int cy, int cw, int coverH) {
+        try {
+            String textureId = selectedTextureOrDefault(asm);
+            PlayerPreviewEntity entity = cardPreviewEntity(slot, modelId, textureId);
+            if (entity == null) {
+                return false;
+            }
+            this.controller.markModelUsed(modelId);
+            if (!entity.isModelReady()) {
+                return false;
+            }
+            boolean disableRotation;
+            try {
+                var props = asm.getModelData().getModelProperties();
+                disableRotation = props != null && props.isDisablePreviewRotation();
+            } catch (Exception ignored) {
+                disableRotation = false;
+            }
+            float scale = ModelPickerLayout.figureScale(coverH);
+            float yaw = disableRotation ? 180.0f : 176.0f;
+            int left = cx + 1;
+            int top = cy + 1;
+            int right = cx + cw - 1;
+            int bottom = cy + coverH - 1;
+            ModelPreviewRenderer.renderLivingEntityPreview(cx + cw / 2.0f, cy + coverH - 3.0f, scale, 0.0f, entity,
+                    RendererManager.getPlayerRenderer(), disableRotation, true, yaw);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void drawCardLoading(GuiGraphics g, int cx, int cy, int cw, int coverH) {
+        String s = "…";
+        g.drawString(this.font, Component.literal(s), cx + (cw - this.font.width(s)) / 2, cy + Math.max(4, (coverH - this.font.lineHeight) / 2), CARD_NAME_TEXT, false);
+    }
+
+    /** 把封面等比 fit 进 (x,y,w,h)，居中不拉伸；拿不到资源/尺寸时返回 false。 */
+    private boolean drawCoverImage(GuiGraphics g, AbstractTexture tex, int x, int y, int w, int h) {
+        if (tex == null || w <= 0 || h <= 0) {
+            return false;
+        }
+        int[] dims = coverDimensions(tex);
+        if (dims == null) {
+            return false;
+        }
+        var loc = this.controller.textureLocation(tex, dims[0]);
+        if (loc == null) {
+            return false;
+        }
+        int texW = dims[0];
+        int texH = dims[1];
+        double fit = Math.min((double) w / texW, (double) h / texH);
+        int dw = Math.max(1, (int) Math.floor(texW * fit));
+        int dh = Math.max(1, (int) Math.floor(texH * fit));
+        int dx = x + (w - dw) / 2;
+        int dy = y + (h - dh) / 2;
+        g.blit(loc, dx, dy, dw, dh, 0, 0, texW, texH, texW, texH);
+        return true;
+    }
+
+    /** 封面像素尺寸：GUI 图一定是 OuterFileTexture（构建链 toPng），直接读 PNG IHDR。 */
+    private int[] coverDimensions(AbstractTexture tex) {
+        if (!(tex instanceof OuterFileTexture outer)) {
+            return null;
+        }
+        synchronized (COVER_DIMENSIONS) {
+            int[] dims = COVER_DIMENSIONS.get(tex);
+            if (dims == null) {
+                dims = pngHeaderSize(outer.getResourceData());
+                if (dims != null) {
+                    COVER_DIMENSIONS.put(tex, dims);
+                }
+            }
+            return dims;
+        }
+    }
+
+    private static int[] pngHeaderSize(byte[] data) {
+        if (data == null || data.length < 24) {
+            return null;
+        }
+        if ((data[0] & 0xFF) != 0x89 || data[1] != 0x50 || data[2] != 0x4E || data[3] != 0x47) {
+            return null;
+        }
+        int w = readIntBE(data, 16);
+        int h = readIntBE(data, 20);
+        return w > 0 && h > 0 && w <= 16384 && h <= 16384 ? new int[]{w, h} : null;
+    }
+
+    private static int readIntBE(byte[] data, int offset) {
+        return ((data[offset] & 0xFF) << 24) | ((data[offset + 1] & 0xFF) << 16) | ((data[offset + 2] & 0xFF) << 8) | (data[offset + 3] & 0xFF);
+    }
+
+    /** 图标纹理按 size 等比放大绘制（源是 16px 格）。 */
+    private void drawIconScaled(GuiGraphics g, IconGlyph icon, int x, int y, int size) {
+        if (size <= 0) {
+            return;
+        }
+        g.blit(MODEL_PANEL_ICONS, x, y, size, size, icon.u, icon.v, 16, 16, 128, 64);
+    }
+
     private ModelListMetrics modelListMetrics(int w, int h, int entryCount) {
         boolean dense = compactModelLayout() || h < 132;
         int targetW = dense ? 104 : 116;
@@ -651,7 +1080,17 @@ public class ModernPlayerModelScreen extends Screen {
 
     private List<ModelEntry> visibleModelEntries() {
         List<ModelEntry> entries = collectModelEntries();
-        ModelListMetrics metrics = modelListMetrics(modelListW(), currentModelGridH(), entries.size());
+        int listW = modelListW();
+        int listH = currentModelGridH();
+        if (gridMode(listW, listH) == ModelPickerLayout.GridMode.CARDS) {
+            ModelPickerLayout.Cards cards = ModelPickerLayout.cards(listW, listH);
+            int page = clamp(STATE.modelScroll, 0, cards.totalPages(entries.size()) - 1);
+            STATE.modelScroll = page;
+            int start = page * cards.capacity();
+            int end = Math.min(entries.size(), start + cards.capacity());
+            return start >= end ? List.of() : entries.subList(start, end);
+        }
+        ModelListMetrics metrics = modelListMetrics(listW, listH, entries.size());
         STATE.modelScroll = clamp(STATE.modelScroll, 0, metrics.maxScroll());
         int start = STATE.modelScroll * metrics.cols();
         int end = Math.min(entries.size(), start + metrics.rows() * metrics.cols());
@@ -690,9 +1129,11 @@ public class ModernPlayerModelScreen extends Screen {
             bx += 24;
             renderIconButton(g, mouseX, mouseY, bx, y + 3, IconGlyph.STAR, Component.translatable("gui.sparkle_morpher.model_panel.toggle_favorite"), this::toggleSelectedStar);
             bx += 24;
-            renderIconButton(g, mouseX, mouseY, bx, y + 3, IconGlyph.RELOAD, Component.translatable("gui.sparkle_morpher.model_panel.reload_models"), () -> ClientModelManager.reloadLocalModels(this::setStatus));
+            renderIconButton(g, mouseX, mouseY, bx, y + 3, IconGlyph.RELOAD, Component.translatable("gui.sparkle_morpher.model_panel.reload_models"), () -> this.controller.reloadLocalModels(this::setStatus));
             bx += 24;
             renderIconButton(g, mouseX, mouseY, bx, y + 3, IconGlyph.UP, getCustomFolderUploadTooltip(), this::openCustomFolderUpload);
+            bx += 24;
+            renderIconButton(g, mouseX, mouseY, bx, y + 3, IconGlyph.MODE, pickerStyleLabel(pickerStyle()), this::cyclePickerStyle);
         }
         renderModelPageControls(g, mouseX, mouseY, x, y, w, gridH);
     }
@@ -702,14 +1143,37 @@ public class ModernPlayerModelScreen extends Screen {
         if (entries.isEmpty()) {
             return;
         }
+        int nextX = x + w - MODEL_PAGE_BUTTON_WIDTH - 6;
+        int prevX = nextX - MODEL_PAGE_BUTTON_WIDTH - 4;
+        if (gridMode(w, gridH) == ModelPickerLayout.GridMode.CARDS) {
+            // 卡片模式：滚动量是页号，整页前进/后退。
+            ModelPickerLayout.Cards cards = ModelPickerLayout.cards(w, gridH);
+            int pages = cards.totalPages(entries.size());
+            int page = clamp(STATE.modelScroll, 0, pages - 1);
+            STATE.modelScroll = page;
+            int start = page * cards.capacity();
+            int end = Math.min(entries.size(), start + cards.capacity());
+            Component range = Component.literal((start + 1) + "-" + end + "/" + entries.size());
+            int labelX = Math.max(x + 82, prevX - this.font.width(range) - 8);
+            drawMuted(g, range, labelX, y + 8);
+            renderTextButton(g, mouseX, mouseY, prevX, y + 3, MODEL_PAGE_BUTTON_WIDTH, MODEL_PAGE_BUTTON_HEIGHT, Component.translatable("gui.sparkle_morpher.pre_page"), () -> {
+                if (page > 0) {
+                    STATE.modelScroll = page - 1;
+                }
+            });
+            renderTextButton(g, mouseX, mouseY, nextX, y + 3, MODEL_PAGE_BUTTON_WIDTH, MODEL_PAGE_BUTTON_HEIGHT, Component.translatable("gui.sparkle_morpher.next_page"), () -> {
+                if (page < pages - 1) {
+                    STATE.modelScroll = page + 1;
+                }
+            });
+            return;
+        }
         ModelListMetrics metrics = modelListMetrics(w, gridH, entries.size());
         STATE.modelScroll = clamp(STATE.modelScroll, 0, metrics.maxScroll());
         int visible = metrics.rows() * metrics.cols();
         int start = Math.min(entries.size(), STATE.modelScroll * metrics.cols());
         int end = Math.min(entries.size(), start + visible);
         Component range = Component.literal((start + 1) + "-" + end + "/" + entries.size());
-        int nextX = x + w - MODEL_PAGE_BUTTON_WIDTH - 6;
-        int prevX = nextX - MODEL_PAGE_BUTTON_WIDTH - 4;
         int labelX = Math.max(x + 82, prevX - this.font.width(range) - 8);
         drawMuted(g, range, labelX, y + 8);
         renderTextButton(g, mouseX, mouseY, prevX, y + 3, MODEL_PAGE_BUTTON_WIDTH, MODEL_PAGE_BUTTON_HEIGHT, Component.translatable("gui.sparkle_morpher.pre_page"), () -> {
@@ -774,8 +1238,8 @@ public class ModernPlayerModelScreen extends Screen {
             return;
         }
         String textureId = selectedTextureOrDefault(assembly);
-        boolean wasTrimmed = ClientModelManager.isGpuCacheTrimmed(modelId);
-        ClientModelManager.markModelUsed(modelId);
+        boolean wasTrimmed = this.controller.isGpuCacheTrimmed(modelId);
+        this.controller.markModelUsed(modelId);
         if (wasTrimmed || !Objects.equals(this.previewModelId, modelId) || !Objects.equals(this.previewTextureId, textureId)) {
             this.previewEntity.initModelWithTexture(modelId, textureId);
             this.previewModelId = modelId;
@@ -839,13 +1303,13 @@ public class ModernPlayerModelScreen extends Screen {
         for (int i = 0; i < rows && STATE.resourceScroll + i < entries.size(); i++) {
             ModelRepoEntry entry = entries.get(STATE.resourceScroll + i);
             int rowY = y + i * ROW;
-            boolean selected = entry.url().equals(STATE.selectedResourceUrl) || this.selectedResourceUrls.contains(entry.url());
+            boolean selected = this.controller.isResourceSelected(entry);
             boolean hover = inside(mouseX, mouseY, x + 3, rowY + 2, ww - 6, ROW - 4);
             fill(g, x + 3, rowY + 2, ww - 6, ROW - 4, selected ? PANEL_ACTIVE : hover ? PANEL_HOVER : (i & 1) == 0 ? 0x3E30363B : 0x3630363B);
             g.drawString(this.font, trim(entry.name(), ww - 78), x + 8, rowY + 5, TEXT, false);
             g.drawString(this.font, trim(resourceDetail(entry), ww - 100), x + 8, rowY + 15, MUTED, false);
-            hit(x + 3, rowY + 2, ww - 38, ROW - 4, Component.literal(entry.name()), () -> clickResource(entry));
-            renderIconButton(g, mouseX, mouseY, x + ww - 28, rowY + 4, ResourceDownloadManager.isQueued(entry) ? IconGlyph.QUEUE : IconGlyph.DOWNLOAD, Component.translatable("gui.sparkle_morpher.model_panel.download"), () -> enqueueResource(entry));
+            hit(x + 3, rowY + 2, ww - 38, ROW - 4, Component.literal(entry.name()), () -> this.controller.clickResource(entry));
+            renderIconButton(g, mouseX, mouseY, x + ww - 28, rowY + 4, this.controller.isQueued(entry) ? IconGlyph.QUEUE : IconGlyph.DOWNLOAD, Component.translatable("gui.sparkle_morpher.model_panel.download"), () -> enqueueResource(entry));
         }
         if (showBar) {
             renderScrollbar(g, mouseX, mouseY, x + w - 7, y + 3, 4, h - 6, entries.size(), rows, STATE.resourceScroll);
@@ -867,17 +1331,14 @@ public class ModernPlayerModelScreen extends Screen {
             drawMuted(g, Component.literal(trim(resourceDetail(selected), w - 16)), x + 8, yy + 4);
             yy += 22;
         }
-        ResourceDownloadManager.Snapshot snapshot = ResourceDownloadManager.snapshot();
         drawSection(g, Component.translatable("gui.sparkle_morpher.model_panel.queue"), x + 8, yy);
         yy += 12;
-        List<ResourceDownloadManager.TaskSnapshot> rows = new ArrayList<>();
-        rows.addAll(snapshot.unfinishedTasks());
-        rows.addAll(snapshot.finishedTasks().stream().limit(8).toList());
+        List<ModernPlayerModelScreenController.TaskView> rows = this.controller.queueRows();
         if (rows.isEmpty()) {
             drawMuted(g, Component.translatable("gui.sparkle_morpher.model_panel.no_downloads"), x + 8, yy);
             yy += 14;
         } else {
-            for (ResourceDownloadManager.TaskSnapshot task : rows) {
+            for (ModernPlayerModelScreenController.TaskView task : rows) {
                 if (yy + 22 > y + h - 30) {
                     break;
                 }
@@ -885,18 +1346,18 @@ public class ModernPlayerModelScreen extends Screen {
                 yy += 24;
             }
         }
-        renderIconButton(g, mouseX, mouseY, x + 8, y + h - 24, IconGlyph.CLEAR, Component.translatable("gui.sparkle_morpher.resource_station.clear_finished"), ResourceDownloadManager::clearFinished);
-        renderIconButton(g, mouseX, mouseY, x + 32, y + h - 24, IconGlyph.CANCEL, Component.translatable("gui.sparkle_morpher.model_panel.cancel_current"), ResourceDownloadManager::cancelCurrent);
+        renderIconButton(g, mouseX, mouseY, x + 8, y + h - 24, IconGlyph.CLEAR, Component.translatable("gui.sparkle_morpher.resource_station.clear_finished"), this.controller::clearFinishedDownloads);
+        renderIconButton(g, mouseX, mouseY, x + 32, y + h - 24, IconGlyph.CANCEL, Component.translatable("gui.sparkle_morpher.model_panel.cancel_current"), this.controller::cancelCurrentDownload);
     }
 
-    private void renderTaskRow(GuiGraphics g, int x, int y, int w, ResourceDownloadManager.TaskSnapshot task) {
+    private void renderTaskRow(GuiGraphics g, int x, int y, int w, ModernPlayerModelScreenController.TaskView task) {
         fill(g, x, y, w, 20, GLASS_DARK);
         drawText(g, Component.literal(trim(task.name(), w - 58)), x + 4, y + 3);
         int barX = x + 4;
         int barY = y + 14;
         int fillW = (int) ((w - 8) * clamp(task.progress(), 0f, 1f));
         fill(g, barX, barY, w - 8, 3, 0xAA101010);
-        fill(g, barX, barY, fillW, 3, stateColor(task.state()));
+        fill(g, barX, barY, fillW, 3, task.color());
     }
 
     private void renderSettingsTab(GuiGraphics g, int mouseX, int mouseY) {
@@ -1033,12 +1494,12 @@ public class ModernPlayerModelScreen extends Screen {
         int listW = w - 32;
         glassPanel(g, listX, listY, listW, h - 108);
         int rows = Math.max(1, (h - 112) / 20);
-        List<String> urls = this.resourceConfig.urls();
+        List<String> urls = this.controller.siteUrls();
         int maxScroll = Math.max(0, urls.size() - rows);
         STATE.sitesScroll = clamp(STATE.sitesScroll, 0, maxScroll);
         for (int i = 0; i < rows && STATE.sitesScroll + i < urls.size(); i++) {
             String url = urls.get(STATE.sitesScroll + i);
-            boolean selected = url.equals(this.resourceConfig.selectedUrl());
+            boolean selected = url.equals(this.controller.selectedSite());
             int rowY = listY + 4 + i * 20;
             renderRowButton(g, mouseX, mouseY, listX + 4, rowY, listW - 8, 17, Component.literal(trim(url, listW - 18)), selected, () -> selectSite(url));
         }
@@ -1080,16 +1541,15 @@ public class ModernPlayerModelScreen extends Screen {
         int yy = y + 70;
         drawMuted(g, Component.translatable("gui.sparkle_morpher.model_panel.drop_files_hint"), x + 12, yy);
         yy += 20;
-        ModelUploadSession session = ModelUploadSession.getInstance();
-        if (session != null) {
-            drawText(g, session.getMessage(), x + 12, yy);
+        if (this.controller.uploadSessionActive()) {
+            drawText(g, this.controller.uploadSessionMessage(), x + 12, yy);
             yy += 14;
             int barW = w - 24;
             fill(g, x + 12, yy, barW, 8, 0xAA101010);
-            fill(g, x + 12, yy, (int) (barW * clamp(session.getProgress(), 0f, 1f)), 8, session.getState() == ModelUploadSession.State.FAILED ? 0xFFD23232 : RED);
+            fill(g, x + 12, yy, (int) (barW * clamp(this.controller.uploadSessionProgress(), 0f, 1f)), 8, this.controller.uploadSessionFailed() ? 0xFFD23232 : RED);
             yy += 16;
-            drawMuted(g, Component.literal(ModelUploadSession.formatBytes(session.getSentBytes()) + " / " + ModelUploadSession.formatBytes(session.getTotalBytes())), x + 12, yy);
-        } else if (this.localImportInProgress) {
+            drawMuted(g, Component.literal(this.controller.uploadSessionBytesText()), x + 12, yy);
+        } else if (this.controller.localImportInProgress()) {
             drawText(g, Component.translatable("gui.sparkle_morpher.model_panel.importing"), x + 12, yy);
         } else {
             drawMuted(g, Component.translatable("gui.sparkle_morpher.model_panel.no_active_import"), x + 12, yy);
@@ -1098,9 +1558,8 @@ public class ModernPlayerModelScreen extends Screen {
 
     private void renderFooter(GuiGraphics g) {
         fill(g, this.layout.left, this.layout.footerTop, this.layout.width, 1, 0x55303030);
-        ResourceDownloadManager.Snapshot snapshot = ResourceDownloadManager.snapshot();
-        Component line = this.status.getString().isBlank() && STATE.activeTab == ModelPanelState.Tab.RESOURCE ? snapshot.status() : this.status;
-        ChatFormatting color = this.status.getString().isBlank() && STATE.activeTab == ModelPanelState.Tab.RESOURCE ? snapshot.statusColor() : this.statusColor;
+        Component line = this.status.getString().isBlank() && STATE.activeTab == ModelPanelState.Tab.RESOURCE ? this.controller.queueStatus() : this.status;
+        ChatFormatting color = this.status.getString().isBlank() && STATE.activeTab == ModelPanelState.Tab.RESOURCE ? this.controller.queueStatusColor() : this.statusColor;
         int c = color.getColor() == null ? MUTED : 0xFF000000 | color.getColor();
         g.drawString(this.font, trim(line.getString(), this.layout.width - 20), this.layout.left + 10, this.layout.footerTop + 8, c, false);
     }
@@ -1186,7 +1645,16 @@ public class ModernPlayerModelScreen extends Screen {
             return true;
         }
         switch (STATE.activeTab) {
-            case MODEL -> STATE.modelScroll = Math.max(0, STATE.modelScroll + delta);
+            case MODEL -> {
+                if (gridMode(modelListW(), currentModelGridH()) == ModelPickerLayout.GridMode.CARDS) {
+                    List<ModelEntry> entries = collectModelEntries();
+                    int pages = entries.isEmpty() ? 1
+                            : ModelPickerLayout.cards(modelListW(), currentModelGridH()).totalPages(entries.size());
+                    STATE.modelScroll = clamp(STATE.modelScroll + delta, 0, pages - 1);
+                } else {
+                    STATE.modelScroll = Math.max(0, STATE.modelScroll + delta);
+                }
+            }
             case RESOURCE -> STATE.resourceScroll = Math.max(0, STATE.resourceScroll + delta);
             case SETTINGS -> STATE.settingsScroll = Math.max(0, STATE.settingsScroll + delta);
         }
@@ -1199,7 +1667,7 @@ public class ModernPlayerModelScreen extends Screen {
         boolean searching = !query.isBlank();
         Set<String> folderPaths = new HashSet<>();
         if (!searching) {
-            for (String pack : ClientModelManager.getModelPackMap().keySet()) {
+            for (String pack : this.controller.modelPackPaths()) {
                 if (isDirectChild(STATE.currentPath, pack)) {
                     String name = pack.substring(STATE.currentPath.length()).replaceAll("/+$", "");
                     if (folderPaths.add(pack)) {
@@ -1210,7 +1678,7 @@ public class ModernPlayerModelScreen extends Screen {
             // Synthesize folder nodes for nested models placed under custom/<subfolder>/
             // without ysm-pack.json entries. Otherwise those models are loaded but
             // cannot be reached through the model browser path navigation.
-            for (String modelId : ClientModelManager.getAvailableModelIds()) {
+            for (String modelId : this.controller.availableModelIds()) {
                 if (!modelId.startsWith(STATE.currentPath)) {
                     continue;
                 }
@@ -1228,7 +1696,8 @@ public class ModernPlayerModelScreen extends Screen {
         }
         Set<String> auth = authModels();
         Set<String> stars = starModels();
-        for (var entry : ClientModelManager.getModelAssemblyMap().entrySet()) {
+        Map<String, ModelAssembly> assemblyMap = this.controller.modelAssemblyMap();
+        for (var entry : assemblyMap.entrySet()) {
             String modelId = entry.getKey();
             ModelAssembly assembly = entry.getValue();
             if (!matchesModelSource(modelId)) {
@@ -1246,11 +1715,10 @@ public class ModernPlayerModelScreen extends Screen {
             boolean locked = assembly.getTextureRegistry().isAuthModel() && !auth.contains(modelId);
             out.add(ModelEntry.model(modelId, displayName(modelId, assembly), modelSubtitle(modelId, assembly), locked));
         }
-        for (String modelId : ClientModelManager.getAvailableModelIds()) {
-            if (ClientModelManager.getModelAssemblyMap().containsKey(modelId)) continue;
-            if (!matchesModelSource(modelId)) continue;
+for (String modelId : this.controller.availableModelIds()) {
+            if (assemblyMap.containsKey(modelId)) continue;
             if (!searching && !isDirectModel(STATE.currentPath, modelId)) continue;
-            boolean authModel = ClientModelManager.isAuthModel(modelId);
+            boolean authModel = this.controller.isAuthModel(modelId);
             if (STATE.modelFilter == ModelPanelState.ModelFilter.STAR && !stars.contains(modelId)) continue;
             if (STATE.modelFilter == ModelPanelState.ModelFilter.AUTH && authModel && !auth.contains(modelId)) continue;
             String lazyTitle = lazyModelDisplayName(modelId);
@@ -1330,7 +1798,7 @@ public class ModernPlayerModelScreen extends Screen {
             setStatus(Component.translatable("message.sparkle_morpher.model.need_auth"), ChatFormatting.YELLOW);
             return;
         }
-        ModelAssembly assembly = ClientModelManager.getModelContext(entry.modelId()).orElse(null);
+        ModelAssembly assembly = this.controller.assemblyOrNull(entry.modelId());
         if (assembly == null) {
             this.pendingModelApplyId = entry.modelId();
             setStatus(Component.translatable("gui.sparkle_morpher.sync_hint.loading"), ChatFormatting.YELLOW);
@@ -1359,63 +1827,32 @@ public class ModernPlayerModelScreen extends Screen {
         applyModelAndTexture(STATE.selectedModelId, selectedTextureOrDefault(assembly), assembly);
     }
 
+    /** §24.7：转发到 Service（保留本方法名，行为不变）。 */
     private void applyModelAndTexture(String modelId, String textureId, ModelAssembly assembly) {
-        if (this.modelSelectionTarget != null) {
-            ClientModelManager.rememberSelectedModel(modelId, textureId);
-            this.modelSelectionTarget.accept(modelId, textureId);
+        ModernPlayerModelScreenController.ApplyResult result = this.controller.applyModel(modelId, textureId, this.modelSelectionTarget, this.rememberPlayerSelection);
+        if (result == ModernPlayerModelScreenController.ApplyResult.APPLIED_TO_TARGET
+                || result == ModernPlayerModelScreenController.ApplyResult.APPLIED_TO_PLAYER) {
             setStatus(Component.translatable("gui.sparkle_morpher.model_panel.applied_model", modelId), ChatFormatting.GREEN);
-            return;
         }
-        LocalPlayer player = Minecraft.getInstance().player;
-        if (player == null) {
-            return;
-        }
-        PlayerCapability.get(player).ifPresent(cap -> {
-            ClientModelManager.rememberSelectedModel(modelId, textureId);
-            if (ClientModelManager.isLocalOnlyModel(modelId)) {
-                cap.initModelWithTexture(modelId, textureId);
-                // 服务器上选择本地模型：其他人看不到，改成跟随服务器给的模型由其他玩家展示。
-                warnLocalModelVisibility();
-            } else if (NetworkHandler.isClientConnected()) {
-                if (ClientModelManager.isLocalOnlyModel(cap.getModelId())) {
-                    cap.initModelWithTexture(modelId, textureId);
-                }
-                NetworkHandler.sendToServer(new C2SRequestSwitchModelPacket(modelId, textureId));
-            } else {
-                cap.initModelWithTexture(modelId, textureId);
-            }
-            setStatus(Component.translatable("gui.sparkle_morpher.model_panel.applied_model", modelId), ChatFormatting.GREEN);
-        });
     }
 
+    /** §24.7：转发到 Service（保留本方法名，行为不变）。 */
     private void toggleSelectedStar() {
-        if (STATE.selectedModelId.isBlank() || Minecraft.getInstance().player == null) {
-            return;
-        }
-        StarModelsCapability.get(Minecraft.getInstance().player).ifPresent(cap -> {
-            if (cap.containsModel(STATE.selectedModelId)) {
-                cap.removeModel(STATE.selectedModelId);
-                LocalStarModelsStore.remove(STATE.selectedModelId);
-                NetworkHandler.sendToServer(C2SSetStarModelPacket.remove(STATE.selectedModelId));
-            } else {
-                cap.addModel(STATE.selectedModelId);
-                LocalStarModelsStore.add(STATE.selectedModelId);
-                NetworkHandler.sendToServer(C2SSetStarModelPacket.add(STATE.selectedModelId));
-            }
-        });
+        this.controller.toggleStar(STATE.selectedModelId);
     }
 
+    /** §24.7：转发到 Service（保留本方法名，行为不变）。 */
     private void deleteSelectedModels() {
         Collection<String> models = this.selectedModelIds.isEmpty() && !STATE.selectedModelId.isBlank() ? List.of(STATE.selectedModelId) : new HashSet<>(this.selectedModelIds);
         if (models.isEmpty()) {
             return;
         }
-        setStatus(ModelPanelFileActions.deleteModels(models));
+        setStatus(this.controller.deleteModels(models));
         this.selectedModelIds.clear();
         STATE.selectedModelId = "";
         STATE.selectedTextureId = "";
         STATE.multiSelectMode = false;
-        ClientModelManager.reloadLocalModels(this::setStatus);
+        this.controller.reloadLocalModels(this::setStatus);
     }
 
     private void selectAllVisibleModels() {
@@ -1432,110 +1869,40 @@ public class ModernPlayerModelScreen extends Screen {
     }
 
     private void refreshResources(boolean manual) {
-        int requestId = ++STATE.resourceRequestId;
-        int generation = this.screenGeneration;
-        ResourceStationConfig.State config = this.resourceConfig;
-        STATE.resourceLoading = true;
-        STATE.resourceLoaded = false;
-        STATE.resourceScroll = 0;
-        STATE.selectedResourceUrl = "";
-        this.resourceEntries.clear();
-        if (STATE.activeTab == ModelPanelState.Tab.RESOURCE) {
-            setResourceStatus(Component.translatable("gui.sparkle_morpher.resource_station.loading"), ChatFormatting.YELLOW);
-        }
-        CompletableFuture.supplyAsync(() -> {
-            try {
-                return ModelRepoClient.list(config.selectedUrl(), config);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }, RESOURCE_EXECUTOR).orTimeout(Math.max(15_000L, config.timeoutMs() * 3L), TimeUnit.MILLISECONDS).whenComplete((result, error) ->
-                ((Executor) Minecraft.getInstance()).execute(() -> {
-                    if (generation != this.screenGeneration || requestId != STATE.resourceRequestId) {
-                        return;
-                    }
-                    STATE.resourceLoading = false;
-                    if (error != null) {
-                        if (STATE.activeTab == ModelPanelState.Tab.RESOURCE) {
-                            setResourceStatus(Component.translatable("gui.sparkle_morpher.resource_station.error", rootMessage(error)), ChatFormatting.RED);
-                        }
-                    } else {
-                        this.resourceEntries.clear();
-                        this.resourceEntries.addAll(result);
-                        this.resourceEntries.sort(Comparator.comparing(e -> e.name().toLowerCase(Locale.ROOT)));
-                        STATE.resourceLoaded = true;
-                        if (STATE.activeTab == ModelPanelState.Tab.RESOURCE) {
-                            setResourceStatus(Component.translatable("gui.sparkle_morpher.resource_station.loaded", result.size()), manual ? ChatFormatting.GREEN : ChatFormatting.GRAY);
-                            init();
-                        }
-                    }
-                }));
+        this.controller.refreshResources(manual);
     }
 
     private List<ModelRepoEntry> filteredResources() {
-        String query = STATE.resourceSearchText.trim().toLowerCase(Locale.ROOT);
-        if (query.isBlank()) {
-            return new ArrayList<>(this.resourceEntries);
-        }
-        List<ModelRepoEntry> out = new ArrayList<>();
-        for (ModelRepoEntry entry : this.resourceEntries) {
-            String text = entry.name() + " "
-                    + ModelRepoClient.safeModelId(entry) + " "
-                    + entry.fileName() + " "
-                    + entry.description() + " "
-                    + entry.author() + " "
-                    + entry.tags() + " "
-                    + entry.url() + " "
-                    + entry.githubOwner() + " "
-                    + entry.githubRepo() + " "
-                    + entry.githubBranch() + " "
-                    + entry.githubPath();
-            if (text.toLowerCase(Locale.ROOT).contains(query)) {
-                out.add(entry);
-            }
-        }
-        return out;
+        return this.controller.filteredResources();
     }
 
     private void clickResource(ModelRepoEntry entry) {
-        if (STATE.resourceMultiSelectMode) {
-            if (!this.selectedResourceUrls.add(entry.url())) {
-                this.selectedResourceUrls.remove(entry.url());
-            }
-            return;
-        }
-        STATE.selectedResourceUrl = entry.url();
+        this.controller.clickResource(entry);
     }
 
     private void toggleResourceMultiSelect() {
-        STATE.resourceMultiSelectMode = !STATE.resourceMultiSelectMode;
-        if (!STATE.resourceMultiSelectMode) {
-            this.selectedResourceUrls.clear();
-            STATE.selectedResourceUrl = "";
-        }
+        this.controller.toggleResourceMultiSelect();
     }
 
     private void enqueueResource(ModelRepoEntry entry) {
-        if (ResourceDownloadManager.enqueue(entry, this.resourceConfig)) {
+        if (this.controller.enqueueResource(entry)) {
             setStatus(Component.translatable("gui.sparkle_morpher.resource_station.queued", entry.name()), ChatFormatting.YELLOW);
         }
     }
 
     private void enqueueSelectedResources() {
-        List<ModelRepoEntry> selected = this.resourceEntries.stream().filter(e -> this.selectedResourceUrls.contains(e.url())).toList();
-        int added = ResourceDownloadManager.enqueueAll(selected.isEmpty() ? filteredResources() : selected, this.resourceConfig);
+        int added = this.controller.enqueueSelectedResources();
         setStatus(Component.translatable("gui.sparkle_morpher.resource_station.queue_added", added), added > 0 ? ChatFormatting.YELLOW : ChatFormatting.GRAY);
     }
 
     private void openSitesPanel() {
         STATE.secondaryPanel = ModelPanelState.SecondaryPanel.SITES;
-        STATE.siteEditText = this.resourceConfig.selectedUrl();
+        STATE.siteEditText = this.controller.selectedSite();
         init();
     }
 
     private void selectSite(String url) {
-        this.resourceConfig = new ResourceStationConfig.State(this.resourceConfig.urls(), url, this.resourceConfig.timeoutMs(), this.resourceConfig.maxDownloadBytes(), this.resourceConfig.preferGithubAccelerator(), this.resourceConfig.githubAccelerators());
-        ResourceStationConfig.save(this.resourceConfig);
+        this.controller.selectSite(url);
         STATE.siteEditText = url;
         STATE.resourceLoaded = false;
         refreshResources(false);
@@ -1544,37 +1911,27 @@ public class ModernPlayerModelScreen extends Screen {
 
     private void saveSite() {
         String url = STATE.siteEditText.trim();
-        if (url.isBlank()) {
+        if (!this.controller.addSite(url)) {
             return;
         }
-        List<String> urls = new ArrayList<>(this.resourceConfig.urls());
-        if (!urls.contains(url)) {
-            urls.add(0, url);
-        }
-        this.resourceConfig = new ResourceStationConfig.State(urls, url, this.resourceConfig.timeoutMs(), this.resourceConfig.maxDownloadBytes(), this.resourceConfig.preferGithubAccelerator(), this.resourceConfig.githubAccelerators());
-        ResourceStationConfig.save(this.resourceConfig);
         STATE.resourceLoaded = false;
         refreshResources(false);
     }
 
     private void deleteSite() {
         String url = STATE.siteEditText.trim();
-        List<String> urls = new ArrayList<>(this.resourceConfig.urls());
-        if (urls.size() <= 1 || !urls.remove(url)) {
+        String selected = this.controller.removeSite(url);
+        if (selected == null) {
             setStatus(Component.translatable("gui.sparkle_morpher.resource_station.cannot_delete"), ChatFormatting.RED);
             return;
         }
-        String selected = urls.get(0);
-        this.resourceConfig = new ResourceStationConfig.State(urls, selected, this.resourceConfig.timeoutMs(), this.resourceConfig.maxDownloadBytes(), this.resourceConfig.preferGithubAccelerator(), this.resourceConfig.githubAccelerators());
-        ResourceStationConfig.save(this.resourceConfig);
         STATE.siteEditText = selected;
         refreshResources(false);
         init();
     }
 
     private void toggleResourceMode() {
-        this.resourceConfig = new ResourceStationConfig.State(this.resourceConfig.urls(), this.resourceConfig.selectedUrl(), this.resourceConfig.timeoutMs(), this.resourceConfig.maxDownloadBytes(), !this.resourceConfig.preferGithubAccelerator(), this.resourceConfig.githubAccelerators());
-        ResourceStationConfig.save(this.resourceConfig);
+        this.controller.toggleMainlandChinaMode();
         STATE.resourceLoaded = false;
         refreshResources(false);
     }
@@ -1590,7 +1947,7 @@ public class ModernPlayerModelScreen extends Screen {
         if (models.isEmpty()) {
             return;
         }
-        setStatus(ModelPanelFileActions.moveModels(models, category));
+        setStatus(this.controller.moveModels(models, category));
         this.selectedModelIds.clear();
         STATE.multiSelectMode = false;
     }
@@ -1601,7 +1958,7 @@ public class ModernPlayerModelScreen extends Screen {
     }
 
     private void openFilePicker() {
-        Component error = ModelImportFilePicker.pickYsmFile();
+        Component error = this.controller.pickYsmFile();
         if (error != null) {
             setStatus(error, ChatFormatting.RED);
         }
@@ -1622,75 +1979,26 @@ public class ModernPlayerModelScreen extends Screen {
     }
 
     private Component getCustomFolderUploadTooltip() {
-        boolean uploadChannel = com.micaftic.morpher.client.upload.YsmUploadClientBridge.isChannelAvailable();
-        if (uploadChannel || (ClientModelManager.isAllowUpload() && ClientModelManager.isOysmServer())) {
+        if (this.controller.isAllowUpload() && this.controller.isOysmServer()) {
             return Component.translatable("gui.sparkle_morpher.upload_custom_folder.tooltip");
         }
-        if (!ClientModelManager.isOysmServer() && !uploadChannel) {
+        if (!this.controller.isOysmServer()) {
             return Component.translatable("gui.sparkle_morpher.upload_custom_folder.tooltip.waiting");
         }
         return Component.translatable("gui.sparkle_morpher.upload_custom_folder.tooltip.disabled");
     }
 
+    /** §24.7：导入推进已外提到 Service，保留本方法供内部/测试调用。 */
     private void pollImports() {
-        ModelImportFilePicker.PickedFile picked;
-        while ((picked = ModelImportFilePicker.pollCompleted()) != null) {
-            this.pendingImports.add(picked);
-        }
-        Component pickerError = ModelImportFilePicker.consumeLastError();
-        if (!pickerError.getString().isEmpty()) {
-            setStatus(pickerError, ChatFormatting.RED);
-        }
-        startNextImportIfIdle();
+        this.controller.pollImports();
     }
 
     private void enqueueImportPath(Path path) {
-        try {
-            if (Files.isDirectory(path)) {
-                this.pendingImports.add(ModelImportFilePicker.packDirectory(path));
-            } else if (ModelImportFilePicker.isImportFileName(path.getFileName().toString())) {
-                this.pendingImports.add(new ModelImportFilePicker.PickedFile(path.getFileName().toString(), Files.readAllBytes(path)));
-            }
-        } catch (IOException e) {
-            setStatus(Component.translatable("gui.sparkle_morpher.import.error.read_file", e.getMessage()), ChatFormatting.RED);
-        }
+        this.controller.enqueueImportPath(path);
     }
 
     private void startNextImportIfIdle() {
-        if (this.localImportInProgress) {
-            return;
-        }
-        ModelUploadSession existing = ModelUploadSession.getInstance();
-        if (existing != null && !existing.isTerminal()) {
-            return;
-        }
-        ModelImportFilePicker.PickedFile file = this.pendingImports.poll();
-        if (file == null) {
-            return;
-        }
-        String fileName = file.fileName() == null ? "imported.bin" : file.fileName();
-        String modelId = stripImportExtension(ModelIdUtil.normalizeImportModelId(fileName));
-        if (modelId.isBlank()) {
-            setStatus(Component.translatable("gui.sparkle_morpher.import.error.model_id_from_filename", fileName), ChatFormatting.RED);
-            return;
-        }
-        this.localImportInProgress = true;
-        setStatus(Component.translatable("gui.sparkle_morpher.import.state.local_importing", modelId), ChatFormatting.YELLOW);
-        ClientModelManager.importLocalModel(modelId, fileName, file.data(), error -> {
-            this.localImportInProgress = false;
-            if (error != null) {
-                setStatus(error, ChatFormatting.RED);
-                return;
-            }
-            if (ClientModelManager.isGltfFileName(fileName)) {
-                setStatus(Component.translatable("gui.sparkle_morpher.import.state.local_imported_as", modelId), ChatFormatting.GREEN);
-                return;
-            }
-            Component uploadError = ModelUploadSession.start(modelId, fileName, file.data());
-            if (uploadError != null) {
-                setStatus(Component.translatable("gui.sparkle_morpher.import.state.local_imported_as", modelId), ChatFormatting.GREEN);
-            }
-        });
+        this.controller.startNextImportIfIdle();
     }
 
     private void openRoulette() {
@@ -2070,7 +2378,7 @@ public class ModernPlayerModelScreen extends Screen {
     }
 
     private ModelRepoEntry selectedResource() {
-        return this.resourceEntries.stream().filter(e -> e.url().equals(STATE.selectedResourceUrl)).findFirst().orElse(null);
+        return this.controller.selectedResource();
     }
 
     private String selectedTextureOrDefault(ModelAssembly assembly) {
@@ -2127,13 +2435,13 @@ public class ModernPlayerModelScreen extends Screen {
     }
 
     private Component modeLabel() {
-        return this.resourceConfig.preferGithubAccelerator()
+        return this.controller.mainlandChinaMode()
                 ? Component.translatable("gui.sparkle_morpher.resource_station.mode.mainland")
                 : Component.translatable("gui.sparkle_morpher.resource_station.mode.native");
     }
 
     private boolean isMainlandResourceMode() {
-        return this.resourceConfig.preferGithubAccelerator();
+        return this.controller.mainlandChinaMode();
     }
 
     private String displayName(String modelId, ModelAssembly assembly) {
@@ -2147,13 +2455,13 @@ public class ModernPlayerModelScreen extends Screen {
 
     /** Title for models that are catalogued but not yet fully loaded into {@code modelAssemblyMap}. */
     private String lazyModelDisplayName(String modelId) {
-        String sniffed = ClientModelManager.getLazyModelDisplayName(modelId);
+        String sniffed = this.controller.lazyModelDisplayName(modelId);
         return StringUtils.isBlank(sniffed) ? modelId : sniffed;
     }
 
     private String modelSubtitle(String modelId, ModelAssembly assembly) {
         List<String> parts = new ArrayList<>();
-        if (ClientModelManager.isLocalOnlyModel(modelId)) {
+        if (this.controller.isLocalOnlyModel(modelId)) {
             parts.add("local");
         }
         if (assembly.getTextureRegistry().isAuthModel()) {
@@ -2182,7 +2490,7 @@ public class ModernPlayerModelScreen extends Screen {
         List<String> parts = new ArrayList<>();
         parts.add(entry.fileName());
         if (entry.size() > 0) {
-            parts.add(ModelUploadSession.formatBytes((int) Math.min(Integer.MAX_VALUE, entry.size())));
+            parts.add(this.controller.formatBytes(entry.size()));
         }
         if (!entry.author().isBlank()) {
             parts.add(entry.author());
@@ -2380,30 +2688,11 @@ public class ModernPlayerModelScreen extends Screen {
     }
 
     private static String stripImportExtension(String fileName) {
-        String lower = fileName.toLowerCase(Locale.ROOT);
-        for (String extension : new String[]{".ysm", ".zip", ".bbmodel", ".gltf", ".glb"}) {
-            if (lower.endsWith(extension)) {
-                return fileName.substring(0, fileName.length() - extension.length());
-            }
-        }
-        return fileName;
+        return ModernPlayerModelScreenController.stripImportExtension(fileName);
     }
 
     private static String rootMessage(Throwable throwable) {
-        Throwable current = throwable;
-        while (current.getCause() != null) {
-            current = current.getCause();
-        }
-        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
-    }
-
-    private static int stateColor(ResourceDownloadManager.TaskState state) {
-        return switch (state) {
-            case DONE -> 0xFF4CAF50;
-            case FAILED -> 0xFFD23232;
-            case CANCELLED -> 0xFF8F8F8F;
-            default -> RED;
-        };
+        return ModernPlayerModelScreenController.rootMessage(throwable);
     }
 
     @SuppressWarnings("unused")

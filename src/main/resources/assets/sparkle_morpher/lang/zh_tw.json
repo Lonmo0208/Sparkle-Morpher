@@ -706,9 +706,9 @@
   "gui.sparkle_morpher.model_panel.category": "分類",
   "gui.sparkle_morpher.model_panel.model": "模型",
   "gui.sparkle_morpher.model_panel.filters": "篩選",
-  "gui.sparkle_morpher.model_panel.filter.all": "ALL",
-  "gui.sparkle_morpher.model_panel.filter.auth": "AUTH",
-  "gui.sparkle_morpher.model_panel.filter.star": "STAR",
+  "gui.sparkle_morpher.model_panel.filter.all": "全部",
+  "gui.sparkle_morpher.model_panel.filter.auth": "授權",
+  "gui.sparkle_morpher.model_panel.filter.star": "收藏",
   "gui.sparkle_morpher.model_panel.actions": "操作",
   "gui.sparkle_morpher.model_panel.multi_select": "多選",
   "gui.sparkle_morpher.model_panel.selected": "已選取",
@@ -821,5 +821,14 @@
   "gui.sparkle_morpher.model_panel.setting.loading_state_position": "載入彈窗位置",
   "gui.sparkle_morpher.model_panel.setting.loading_state_offset_x": "載入彈窗 X 偏移",
   "gui.sparkle_morpher.model_panel.setting.loading_state_offset_y": "載入彈窗 Y 偏移",
-  "gui.sparkle_morpher.model_panel.setting.loading_state_auto_hide": "載入彈窗自動隱藏"
+  "gui.sparkle_morpher.model_panel.setting.loading_state_auto_hide": "載入彈窗自動隱藏",
+  "gui.sparkle_morpher.settings.title": "設定",
+  "gui.sparkle_morpher.config.renderer.compatibility": "相容模式",
+  "gui.sparkle_morpher.config.renderer.gpu": "GPU",
+  "gui.sparkle_morpher.model_panel.setting.privacy_mode": "隱私模式（僅本機模型）",
+  "gui.sparkle_morpher.model_panel.setting.disable_face_culling": "關閉模型面剔除",
+  "gui.sparkle_morpher.model_panel.setting.lazy_model_loading": "按需載入模型",
+  "message.sparkle_morpher.privacy_mode.enabled": "隱私模式已開啟：已封鎖伺服器模型同步以及 Sparkle Morpher 的全部客戶端上行資料。",
+  "message.sparkle_morpher.privacy_mode.reconnect": "隱私模式將在本次連線中保持開啟；重新連線後才會恢復伺服器同步。",
+  "gui.sparkle_morpher.model_panel.model.on_demand": "首次使用時載入"
 }
