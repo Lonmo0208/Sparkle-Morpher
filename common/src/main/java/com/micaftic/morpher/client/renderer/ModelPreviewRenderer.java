@@ -556,6 +556,11 @@ public final class ModelPreviewRenderer {
             guiGraphics.flush();
             boolean isolatedAcceleratedRendering = AcceleratedRenderingCompat.enterVanillaPipeline();
             boolean projectionBackedUp = false;
+            // immediateWithBuffers 的 BufferSource 没有 close()，这些 ByteBufferBuilder 持有
+            // native 内存（LWJGL malloc），必须手动释放，否则每帧 FBO 重渲染泄漏原生内存，
+            // 最终在 realloc 扩容（512KB->1MB）时 native OOM。声明在 try 外以便 finally 释放。
+            SequencedMap<RenderType, ByteBufferBuilder> fboTypeBuffers = null;
+            ByteBufferBuilder fboSharedBuffer = null;
             ModelRendererBridge.beginPreviewFrame();
             try {
                 // RenderTarget.clear() 会自行 bindWrite，清屏后又 unbindWrite，因此必须在 clear 之后重新绑定。
@@ -580,13 +585,14 @@ public final class ModelPreviewRenderer {
                 // 第二次 getBuffer() 会先 endBatch() 掉前一个 builder，随后 Double 写入时触发
                 // BufferBuilder "Not building!"（Sodium 下经 modifyPutBulkData 路径复现；原版同样会崩）。
                 // immediateWithBuffers + 惰性 per-type 映射，等价于主 renderBuffers 的固定缓冲语义。
-                SequencedMap<RenderType, ByteBufferBuilder> fboTypeBuffers = new LinkedHashMap<>() {
+                fboTypeBuffers = new LinkedHashMap<>() {
                     @Override
                     public ByteBufferBuilder get(Object key) {
                         return super.computeIfAbsent((RenderType) key, k -> new ByteBufferBuilder(256));
                     }
                 };
-                MultiBufferSource.BufferSource fboBuffer = MultiBufferSource.immediateWithBuffers(fboTypeBuffers, new ByteBufferBuilder(256));
+                fboSharedBuffer = new ByteBufferBuilder(256);
+                MultiBufferSource.BufferSource fboBuffer = MultiBufferSource.immediateWithBuffers(fboTypeBuffers, fboSharedBuffer);
                 long modelStart = profile ? System.nanoTime() : 0L;
                 renderOverlayModel(localPlayer, EXTRA_PLAYER_FBO_PADDING, EXTRA_PLAYER_FBO_PADDING,
                         scale, yawOffset, zDepth, partialTick, fboBuffer);
@@ -616,6 +622,15 @@ public final class ModelPreviewRenderer {
                 }
                 // unbindWrite() 只会绑定 framebuffer 0，不会恢复 Minecraft 的主目标和视口。
                 mainRenderTarget.bindWrite(true);
+                // 释放本帧 FBO 的 native 缓冲（endBatch 仅上传不释放内存）。
+                if (fboSharedBuffer != null) {
+                    fboSharedBuffer.close();
+                }
+                if (fboTypeBuffers != null) {
+                    for (ByteBufferBuilder b : fboTypeBuffers.values()) {
+                        b.close();
+                    }
+                }
             }
         }
 
