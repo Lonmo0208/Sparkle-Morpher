@@ -100,6 +100,11 @@ public final class ClientPacketHandlers {
 
     public static void handleSetModelAndTexture(Object obj) {
         S2CSetModelAndTexturePacket message = (S2CSetModelAndTexturePacket) obj;
+        // 记下带 UUID 的指派：远景替身覆盖的远处玩家在客户端没有实体，靠这份缓存才能建出模型。
+        if (message.getPlayerUuid() != null) {
+            com.micaftic.morpher.capability.client.PlayerModelSpecStore.put(
+                    message.getPlayerUuid(), message.getModelId(), message.getTextureId(), message.isDisabled());
+        }
         EntityJoinCallbackEvent.addCallback(message.getEntityId(), entity -> {
             PlayerCapability.get(entity).ifPresent(cap -> {
                 LocalPlayer localPlayer = Minecraft.getInstance().player;
@@ -124,6 +129,9 @@ public final class ClientPacketHandlers {
                     cap.initModelWithTexture(message.getModelId(), message.getTextureId());
                     cap.setForceDisabled(message.isDisabled());
                 }
+                // 玩家实体路径同样记一份「UUID → 模型」到本地（远景替身靠它建模型，见 PlayerModelSpecStore）。
+                com.micaftic.morpher.capability.client.PlayerModelSpecStore.put(
+                        entity.getUUID(), message.getModelId(), message.getTextureId(), message.isDisabled());
                 applyPlayerState(entity, message.getEntityModelSync());
             });
         });

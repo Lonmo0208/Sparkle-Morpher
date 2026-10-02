@@ -19,6 +19,8 @@ public final class YsmEventBootstrap {
         CommandRegistry.register(); CapabilityEvent.register(); LivingEventBridge.register();
         if (!PlatformAPI.isServer()) {
             registerClient("com.micaftic.morpher.event.EntityJoinCallbackEvent");
+            registerClient("com.micaftic.morpher.client.event.FarPlayerModelRenderEvent");
+            registerClient("com.micaftic.morpher.client.event.FarModelDepthCommand");
             registerClient("com.micaftic.morpher.client.event.ClientResourceLifecycleEvent");
             registerClient("com.micaftic.morpher.client.event.PlayerSkinTextureManager");
             registerClient("com.micaftic.morpher.client.renderer.RendererManager");

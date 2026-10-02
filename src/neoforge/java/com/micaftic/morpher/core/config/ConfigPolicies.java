@@ -17,6 +17,14 @@ public final class ConfigPolicies {
         return bool(GeneralConfig.DISABLE_MODEL_FACE_CULLING, false);
     }
 
+    /**
+     * 远处玩家（超出原版地形覆盖范围）是否关掉深度比较绘制。关掉可消除远处模型的 z-fighting 闪烁，
+     * 代价是模型自我遮挡改为按绘制顺序。
+     */
+    public static boolean farModelNoDepthTest() {
+        return bool(GeneralConfig.FAR_MODEL_NO_DEPTH, true);
+    }
+
     /** Developer-options panel-state writeback gate; default false keeps state immutable from the UI. */
     public static boolean developerStateWriteback() {
         return bool(GeneralConfig.DEVELOPER_STATE_WRITEBACK, false);

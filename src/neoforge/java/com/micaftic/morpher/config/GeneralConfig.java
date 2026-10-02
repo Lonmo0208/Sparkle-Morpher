@@ -37,6 +37,8 @@ public class GeneralConfig {
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue DISABLE_MODEL_GLOW_IN_SHADERPACK;
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue DISABLE_MODEL_FACE_CULLING;
 
+    public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue FAR_MODEL_NO_DEPTH;
+
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue ANIMATION_DISTANCE_LOD;
 
     public static net.neoforged.neoforge.common.ModConfigSpec.BooleanValue EXPERIMENTAL_JAVA_VECTOR_RENDERER;
@@ -167,6 +169,11 @@ public class GeneralConfig {
         DISABLE_MODEL_GLOW_IN_SHADERPACK = builder.define("DisableModelGlowInShaderpack", true);
         builder.comment("Disable the per-cube face cull baked into models. Turn this on if a model loses faces/parts at certain angles. Changing it reloads models.");
         DISABLE_MODEL_FACE_CULLING = builder.define("DisableModelFaceCulling", false);
+        builder.comment("Draw far players (beyond the vanilla terrain range, where only Voxy LOD terrain exists) without depth comparison.",
+                "The main framebuffer depth cannot occlude anything out there, while a detailed model z-fights with itself because Voxy extends the projection far plane and depth precision collapses at range -> visible flickering, worse the farther away.",
+                "true (default): no flicker, but self-occlusion follows draw order (e.g. an arm drawn in front of the body).",
+                "false: previous behaviour (depth based self-occlusion, flickers far away).");
+        FAR_MODEL_NO_DEPTH = builder.define("FarModelNoDepthTest", true);
         ROULETTE_CONTENT_MODE = builder.defineEnum("RouletteContentMode", RouletteContentMode.ORIGINAL);
         builder.comment("The amount of volume when the animation is played.");
         SOUND_VOLUME = builder.defineInRange("SoundVolume", 100.0d, 0.0d, 100.0d);

@@ -124,7 +124,7 @@ public class ModelInfoCapability {
                 if (consumerPoll != null) {
                     consumerPoll.accept(object2FloatOpenHashMap);
                 } else {
-                    return Optional.of(new S2CSetModelAndTexturePacket(serverPlayer.getId(), this.modelId, this.selectTexture, this.disabled, this.animSync.buildFullSyncMessage(serverPlayer, fullSync).setMolangVars(it.getLoadedModelData().getHashId(), object2FloatOpenHashMap)));
+                    return Optional.of(new S2CSetModelAndTexturePacket(serverPlayer.getId(), this.modelId, this.selectTexture, this.disabled, this.animSync.buildFullSyncMessage(serverPlayer, fullSync).setMolangVars(it.getLoadedModelData().getHashId(), object2FloatOpenHashMap), serverPlayer.getUUID()));
                 }
             }
         } else {
@@ -132,7 +132,7 @@ public class ModelInfoCapability {
             if (this.modelId.equals(defaultConfig.getLeft())) {
                 NetworkOnlineDebugLog.info("createSyncMessage: default model fallback for {} modelId={}",
                         serverPlayer.getName().getString(), this.modelId);
-                return Optional.of(new S2CSetModelAndTexturePacket(serverPlayer.getId(), this.modelId, this.selectTexture, this.disabled, this.animSync.buildFullSyncMessage(serverPlayer, fullSync)));
+                return Optional.of(new S2CSetModelAndTexturePacket(serverPlayer.getId(), this.modelId, this.selectTexture, this.disabled, this.animSync.buildFullSyncMessage(serverPlayer, fullSync), serverPlayer.getUUID()));
             }
             return Optional.empty();
         }

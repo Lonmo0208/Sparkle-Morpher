@@ -21,7 +21,10 @@ public final class SlashBladeRenderer {
         if (!SlashBladeModState.LOADED) {
             return;
         }
-        SlashBladeBridge.renderMainHandBlade(entity, model, stack, partialTick, poseStack, bufferSource, packedLight);
+        // 官方 YSM 1.20 骨骼定位算法：leftWaistBlade/bladeBones/sheathBones 三锚点 +
+        // scale==0 隐藏检查，任意比例自定义模型上位置正确。不能使用上游 1.2.7 的
+        // renderAttachedToModel（bladeBones 兜底 leftHandBones，无腰挂锚点，刀会贴到手掌）。
+        SlashBladeBridge.renderMainHandBladeOnBones(entity, stack, partialTick, poseStack, bufferSource, packedLight, model);
     }
 
     public static void renderRightWaist(AnimatedGeoModel model, LivingEntity entity, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, ItemStack stack) {

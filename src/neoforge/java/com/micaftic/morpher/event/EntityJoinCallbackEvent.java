@@ -128,6 +128,10 @@ public class EntityJoinCallbackEvent {
         LAST_SEEN_MODEL_ID.put(entityId, modelId);
         LAST_SEEN_DISABLED.put(entityId, disabled);
 
+        // 记一份「玩家 UUID → 模型」到本地：远景替身覆盖的远处玩家在客户端没有实体，
+        // 靠这份记录才能在远处把模型建出来（不必贴脸加载，也不依赖服务端）。
+        com.micaftic.morpher.capability.client.PlayerModelSpecStore.put(player.getUUID(), modelId, finalTextureId, disabled);
+
         PlayerCapability.get(player).ifPresent(cap -> {
             cap.initModelWithTexture(modelId, finalTextureId);
             cap.setForceDisabled(disabled);
