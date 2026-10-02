@@ -1044,6 +1044,27 @@ public class ClientModelManager {
         return LegacyCompatState.isOysmServer();
     }
 
+    /** 服务器确认是 SPM/OpenYSM（品牌 open_ysm:v1）：SPM 专有判别号只允许发给它。 */
+    public static boolean isSpmServer() {
+        return LegacyCompatState.isSpmServer();
+    }
+
+    /**
+     * SPM 专有网络功能（假人列表/女仆换模等）的前置检查：服务器必须是 SPM。
+     * 不满足时给玩家一条提示并返回 false —— 向官方 YSM 服务器发 SPM 专有判别号会让
+     * 对端解码失败、直接断连踢人（上传包 70-74 已踩过同样的坑）。
+     */
+    public static boolean requireSpmServer() {
+        if (LegacyCompatState.isSpmServer()) {
+            return true;
+        }
+        if (Minecraft.getInstance().player != null) {
+            Minecraft.getInstance().player.displayClientMessage(
+                    Component.translatable("message.sparkle_morpher.client.spm_required"), false);
+        }
+        return false;
+    }
+
     // R7 剩余：Legacy sync 状态机/握手协议迁至 LegacyModelSyncClient（startSync 委托）
 
     public static void startSync(Connection connection, ByteBuffer byteBuffer) {
@@ -1747,6 +1768,10 @@ private static RawYsmModel parseBbModelImport(byte[] data, String source) throws
 
     public static void setOysmServer(boolean isOysmServer) {
         LegacyCompatState.setOysmServer(isOysmServer);
+    }
+
+    public static void setSpmServer(boolean isSpmServer) {
+        LegacyCompatState.setSpmServer(isSpmServer);
     }
 
     private static void onSyncError(@Nullable Object obj) {

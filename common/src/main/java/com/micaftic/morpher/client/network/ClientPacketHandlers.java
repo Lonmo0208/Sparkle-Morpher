@@ -154,6 +154,7 @@ public final class ClientPacketHandlers {
         S2CVersionCheckPacket message = (S2CVersionCheckPacket) obj;
         ClientModelManager.setOysmServer(message.isOysmServer());
         ClientModelManager.setAllowUpload(message.isAllowUpload());
+        ClientModelManager.setSpmServer(message.isSpmServer());
         if (NetworkHandler.setChannelVersion(connection, message.getVersion())) {
             ClientModelManager.onSyncConnected();
         }

@@ -11,6 +11,7 @@ public final class LegacyCompatState {
     private static volatile boolean clientComplete;
     private static volatile boolean oysmServer;
     private static volatile boolean allowUpload;
+    private static volatile boolean spmServer;
 
     private LegacyCompatState() {
     }
@@ -35,6 +36,7 @@ public final class LegacyCompatState {
         clientComplete = false;
         oysmServer = false;
         allowUpload = false;
+        spmServer = false;
     }
 
     public static boolean isOysmServer() {
@@ -51,5 +53,14 @@ public final class LegacyCompatState {
 
     public static void setAllowUpload(boolean value) {
         allowUpload = value;
+    }
+
+    /** 服务器品牌为 open_ysm:v1（SPM/OpenYSM 服务器），可以安全接收 SPM 专有判别号。 */
+    public static boolean isSpmServer() {
+        return spmServer;
+    }
+
+    public static void setSpmServer(boolean value) {
+        spmServer = value;
     }
 }

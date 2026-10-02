@@ -1,4 +1,5 @@
 package com.micaftic.morpher.client.gui;
+import com.micaftic.morpher.client.ClientModelManager;
 import com.micaftic.morpher.fakeplayer.*;
 import com.micaftic.morpher.network.NetworkHandler;
 import com.micaftic.morpher.network.message.*;
@@ -26,6 +27,11 @@ public final class FakePlayerManagerScreen extends Screen {
 
     public static void open() {
         FakePlayerListCache.replace(List.of());
+        // 假人列表是 SPM 专有协议（判别号 26/25），只有 SPM 服务端能应答；
+        // 发给官方 YSM 服务器会因目标包未注册被断连踢人。
+        if (!ClientModelManager.requireSpmServer()) {
+            return;
+        }
         InputUtil.setScreen(new FakePlayerManagerScreen());
         NetworkHandler.sendToServer(new C2SRequestFakePlayerListPacket());
     }

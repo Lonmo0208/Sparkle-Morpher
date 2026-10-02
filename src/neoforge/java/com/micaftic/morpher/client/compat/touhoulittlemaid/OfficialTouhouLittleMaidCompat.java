@@ -2,6 +2,7 @@ package com.micaftic.morpher.client.compat.touhoulittlemaid;
 
 import com.micaftic.morpher.core.compat.touhoulittlemaid.TouhouLittleMaidAccess;
 
+import com.micaftic.morpher.client.ClientModelManager;
 import com.micaftic.morpher.client.gui.ModernPlayerModelScreen;
 import com.micaftic.morpher.network.NetworkHandler;
 import com.micaftic.morpher.network.message.C2SSetMaidModelPacket;
@@ -81,20 +82,33 @@ final class OfficialTouhouLittleMaidCompat {
         if (modelId == null || modelId.isBlank()) {
             return;
         }
-        // SPM 自有链路：发 C2SSetMaidModelPacket → server 端 MaidModelSync.applySelectedModel（含 auth 校验）
-        try {
-            NetworkHandler.sendToServer(new C2SSetMaidModelPacket(maid.getId(), modelId, texture == null ? "" : texture));
-            return;
-        } catch (Throwable ignored) {
-            // SPM 包不可用时回退官方女仆协议
+        String resolvedTexture = texture == null ? "" : texture;
+        // 只有服务器确认是 SPM/OpenYSM（品牌 open_ysm:v1）才发 SPM 专有女仆包（判别号 24）：
+        // 官方 YSM 服务器（协议同源但判别号不同）解不了这个包，会解码崩溃断连踢人
+        // ——与 70-74 上传包踩过的 Invalid index 同一类问题。
+        if (ClientModelManager.isSpmServer()) {
+            try {
+                NetworkHandler.sendToServer(new C2SSetMaidModelPacket(maid.getId(), modelId, resolvedTexture));
+                return;
+            } catch (Throwable ignored) {
+                // SPM 包不可用：不再混发官方包，避免两套协议互相干扰
+                return;
+            }
         }
+        // 非 YSM 兼容服务器（没回过版本握手）：服务端不存在 YSM 模型，发任何换模包都会因
+        // 目标包未注册被踢，直接只做本地选择。
+        if (!ClientModelManager.isOysmServer()) {
+            return;
+        }
+        // 官方 YSM 服务器 + 车万女仆：走车万女仆官方协议 YsmMaidModelPackage（官方 YSM 自己
+        // 引用该类做服务端换模），语义与官方客户端一致。
         try {
             Class<?> packetClass = Class.forName(MODEL_PACKET, false,
                     OfficialTouhouLittleMaidCompat.class.getClassLoader());
             Constructor<?> constructor = packetClass.getConstructor(
                     int.class, String.class, String.class, Component.class);
             Object packet = constructor.newInstance(
-                    maid.getId(), modelId, texture == null ? "" : texture, Component.literal(modelId));
+                    maid.getId(), modelId, resolvedTexture, Component.literal(modelId));
             if (packet instanceof CustomPacketPayload payload) {
                 PacketDistributor.sendToServer(payload);
             }

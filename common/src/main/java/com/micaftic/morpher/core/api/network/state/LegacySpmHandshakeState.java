@@ -59,6 +59,15 @@ public final class LegacySpmHandshakeState {
         return LegacyCompatState.isAllowUpload();
     }
 
+    /** 服务器确认是 SPM/OpenYSM（品牌 open_ysm:v1），SPM 专有判别号只允许发给它。 */
+    public static void setSpmServer(boolean value) {
+        LegacyCompatState.setSpmServer(value);
+    }
+
+    public static boolean isSpmServer() {
+        return LegacyCompatState.isSpmServer();
+    }
+
     /** 清空整个客户端 legacy 会话状态（握手 + 服务器能力），用于退出服务器 / 进入隐私模式。 */
     public static void resetClientSession() {
         LegacyCompatState.resetClientSession();

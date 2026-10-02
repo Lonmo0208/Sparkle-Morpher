@@ -668,6 +668,7 @@
   "key.sparkle_morpher.player_model.desc": "Open Player Model GUI",
   "message.sparkle_morpher.client.ping_result": "§6§l[§asparkle§6§l] §rThe server-side  mod version is §c§n%s",
   "message.sparkle_morpher.client.server_not_found": "§6§l[§asparkle§6§l] §rThe server-side  mod version is different from the client-side. Some features might not be available",
+  "message.sparkle_morpher.client.spm_required": "§6§l[§asparkle§6§l] §rThis server is not an SPM server; this feature is unavailable",
   "message.sparkle_morpher.compatibility_warning.tac": " is incompatible with TAC mod with version below 0.3.7",
   "message.sparkle_morpher.model.animation_roulette.play": "§6§l[§asparkle§6§l] §rPlay '%s' animation",
   "message.sparkle_morpher.model.debug_animation.false": "§6§l[§asparkle§6§l] §rAnimation debug disable",

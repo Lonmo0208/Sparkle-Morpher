@@ -668,6 +668,7 @@
   "key.sparkle_morpher.player_model.desc": "打开玩家模型界面",
   "message.sparkle_morpher.client.ping_result": "§6§l[§asparkle§6§l] §r服务端  模组版本为 §c§n%s",
   "message.sparkle_morpher.client.server_not_found": "§6§l[§asparkle§6§l] §r服务端  模组版本与客户端不同，部分功能无法使用",
+  "message.sparkle_morpher.client.spm_required": "§6§l[§asparkle§6§l] §r当前服务器不是 SPM 服务端，该功能不可用",
   "message.sparkle_morpher.compatibility_warning.tac": " 不兼容低于 0.3.7 版本的 TAC 模组",
   "message.sparkle_morpher.model.animation_roulette.play": "§6§l[§asparkle§6§l] §r播放“%s”动画",
   "message.sparkle_morpher.model.debug_animation.false": "§6§l[§asparkle§6§l] §r动画调试模式关闭",

@@ -1,6 +1,7 @@
 package com.micaftic.morpher.client.gui;
 
 import com.micaftic.morpher.capability.PlayerCapability;
+import com.micaftic.morpher.client.ClientModelManager;
 import com.micaftic.morpher.core.compat.touhoulittlemaid.MaidCapability;
 import com.micaftic.morpher.core.compat.touhoulittlemaid.TouhouMaidCompat;
 import com.micaftic.morpher.core.gui.UnifiedRouletteScreen;
@@ -46,7 +47,8 @@ public final class TargetActionSelectionScreen extends Screen {
 
     public static void open() {
         InputUtil.setScreen(new TargetActionSelectionScreen());
-        if (NetworkHandler.isClientConnected()) {
+        // 只有 SPM 服务端能应答假人列表（判别号 26）；女仆目标来自本地实体，不受影响。
+        if (NetworkHandler.isClientConnected() && ClientModelManager.isSpmServer()) {
             NetworkHandler.sendToServer(new C2SRequestFakePlayerListPacket());
         }
     }
