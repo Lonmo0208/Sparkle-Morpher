@@ -1,77 +1,195 @@
 package com.micaftic.morpher.client.upload;
 
 import com.micaftic.morpher.client.ClientModelManager;
+import com.micaftic.morpher.core.api.network.state.CloudState;
 import com.micaftic.morpher.core.api.network.upload.ModelUploadTransport;
-import com.micaftic.morpher.legacy.compat.LegacyCompatUploadTransport;
+import com.micaftic.morpher.legacy.compat.LegacyCompatModelFormat;
 import com.micaftic.morpher.network.NetworkHandler;
 import com.micaftic.morpher.util.DigestUtil;
 import com.micaftic.morpher.util.PerformanceProfiler;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
-import com.micaftic.morpher.legacy.compat.LegacyCompatModelFormat;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * One asynchronous upload to the configured SPM Cloud instance, with a fallback to the
+ * standalone {@code exspm_hserverysm_model} server channel.
+ *
+ * <p>Two transports coexist:</p>
+ * <ul>
+ *   <li><b>Cloud</b> (default): {@link CloudUploadRuntime#transport()} streams a file to the
+ *       SPM Cloud API; one asynchronous {@code upload(...)} call, progress + completion via
+ *       the returned future.</li>
+ *   <li><b>Standalone channel</b> (DragonVer): when the server negotiates the
+ *       {@code exspm_hserverysm_model:1} channel (standalone server-only upload mod),
+ *       uploads go straight into the official YSM custom folder via
+ *       {@link YsmUploadTransport}. This path keeps the start/chunk/finish packet state
+ *       machine driven by {@link #tickCurrent()} and acknowledged by
+ *       {@link #onStartAck(long, byte, int, int, int, String)} /
+ *       {@link #onResult(long, byte, String, long, long, String)}.</li>
+ * </ul>
+ *
+ * <p>Routing: the byte[] overloads prefer the standalone channel when negotiated and fall
+ * back to Cloud otherwise; the Path overload is Cloud-only (the channel protocol needs the
+ * full buffer anyway).</p>
+ */
 public final class ModelUploadSession {
     private static final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
-    /** R9.3：发包交给 transport；当前默认 legacy 服务器通道，行为与旧版本一致。 */
-    private static volatile ModelUploadTransport transport = LegacyCompatUploadTransport.INSTANCE;
     private static volatile ModelUploadSession instance;
     private static volatile boolean serverLimitsKnown = false;
-    private static volatile int lastMaxTotalBytes = 16_777_216;
+    private static volatile int lastMaxTotalBytes = 128 * 1024 * 1024;
     private static volatile int lastChunksPerTick = 4;
 
     private final String modelId;
     private final String fileName;
+    /** Standalone channel only; null on Cloud sessions. */
     private final byte[] data;
+    /** Cloud sessions only; null on the standalone channel. */
+    private final Path source;
+    private final boolean deleteSourceOnCompletion;
     private final String sha256;
     private final boolean syncSelectionOnComplete;
-    private final ModelUploadTransport sessionTransport;
+    /** Standalone channel only; null on Cloud sessions. */
+    private final YsmUploadTransport sessionTransport;
+    private final AtomicBoolean cancelled = new AtomicBoolean();
     private volatile State state = State.STARTING;
+    private volatile long sentBytes;
+    private volatile Component message = Component.translatable("gui.sparkle_morpher.import.state.importing");
+    // Standalone channel state machine.
     private volatile long uploadId = 0L;
     private volatile int chunkSize = 32_000;
     private volatile int chunksPerTick = 4;
     private volatile int nextOffset = 0;
-    private volatile Component message = Component.empty();
 
-    private ModelUploadSession(String modelId, String fileName, byte[] data, boolean syncSelectionOnComplete, ModelUploadTransport transport) {
+    private ModelUploadSession(String modelId, String fileName, byte[] data, boolean syncSelectionOnComplete, YsmUploadTransport transport) {
         this.modelId = modelId;
         this.fileName = fileName;
         this.data = data;
+        this.source = null;
+        this.deleteSourceOnCompletion = false;
         this.sha256 = DigestUtil.sha256Hex(data);
         this.syncSelectionOnComplete = syncSelectionOnComplete;
         this.sessionTransport = transport;
+    }
+
+    private ModelUploadSession(String modelId, String fileName, Path source,
+                               boolean deleteSourceOnCompletion) {
+        this.modelId = modelId;
+        this.fileName = fileName;
+        this.data = null;
+        this.source = source;
+        this.deleteSourceOnCompletion = deleteSourceOnCompletion;
+        this.sha256 = null;
+        this.syncSelectionOnComplete = false;
+        this.sessionTransport = null;
     }
 
     public static ModelUploadSession getInstance() {
         return instance;
     }
 
-    public static synchronized Component start(String modelId, byte[] data) {
-        return start(modelId, modelId + ".ysm", data);
-    }
-
+    /** Existing screens may pass bytes; the HTTP body is still streamed from a temporary file. */
     public static synchronized Component start(String modelId, String fileName, byte[] data) {
-        return start(modelId, fileName, data, true);
+        return start(modelId, fileName, data, true, "PRIVATE");
     }
 
-    public static synchronized Component start(String modelId, String fileName, byte[] data, boolean syncSelectionOnComplete) {
+    public static synchronized Component start(String modelId, String fileName, byte[] data,
+                                               boolean syncSelectionOnComplete) {
+        return start(modelId, fileName, data, syncSelectionOnComplete, "PRIVATE");
+    }
+
+    public static synchronized Component start(String modelId, String fileName, byte[] data,
+                                               boolean syncSelectionOnComplete, String visibility) {
+        if (data == null || data.length == 0) {
+            return Component.translatable("gui.sparkle_morpher.import.error.empty_file");
+        }
+        if (YsmUploadClientBridge.isChannelAvailable()) {
+            return startOnUploadChannel(modelId, fileName, data, syncSelectionOnComplete);
+        }
+        try {
+            Path temporary = Files.createTempFile("spm-cloud-upload-", extensionFor(fileName));
+            Files.write(temporary, data);
+            Component error = start(modelId, fileName, temporary, syncSelectionOnComplete, visibility, true);
+            if (error != null) Files.deleteIfExists(temporary);
+            return error;
+        } catch (IOException error) {
+            return Component.translatable("gui.sparkle_morpher.import.error.local_storage");
+        }
+    }
+
+    /** Starts a Cloud upload without materializing the source in memory. */
+    public static synchronized Component start(String modelId, String fileName, Path source,
+                                               boolean syncSelectionOnComplete) {
+        return start(modelId, fileName, source, syncSelectionOnComplete, "PRIVATE", false);
+    }
+
+    private static Component start(String modelId, String fileName, Path source,
+                                   boolean ignoredSyncSelectionOnComplete,
+                                   String visibility,
+                                   boolean deleteSourceOnCompletion) {
         if (instance != null && !instance.isTerminal()) {
             return Component.translatable("gui.sparkle_morpher.import.error.in_progress");
         }
-        if (data.length == 0) {
-            return Component.translatable("gui.sparkle_morpher.import.error.empty_file");
+        ModelUploadTransport uploadTransport = CloudUploadRuntime.transport();
+        if (uploadTransport == null || !CloudState.isAvailable()) {
+            return Component.translatable("gui.sparkle_morpher.import.error.cloud_unavailable");
+        }
+        if (modelId == null || modelId.isBlank() || fileName == null || fileName.isBlank()) {
+            return Component.translatable("gui.sparkle_morpher.import.error.invalid_model_id_or_hash");
+        }
+        final long totalBytes;
+        final String sha256;
+        try {
+            totalBytes = Files.size(source);
+            if (totalBytes <= 0 || totalBytes > Integer.MAX_VALUE) {
+                return Component.translatable("gui.sparkle_morpher.import.error.empty_file");
+            }
+            sha256 = DigestUtil.sha256Hex(source);
+        } catch (IOException error) {
+            return Component.translatable("gui.sparkle_morpher.import.error.local_storage");
+        }
+        if (totalBytes > lastMaxTotalBytes) {
+            return Component.translatable("gui.sparkle_morpher.import.error.server_limit", formatBytes(lastMaxTotalBytes));
+        }
+        ImportKind kind = ImportKind.fromFileName(fileName);
+        if (kind == ImportKind.UNKNOWN) {
+            return Component.translatable("gui.sparkle_morpher.import.error.invalid_extension");
+        }
+        try {
+            if (kind == ImportKind.YSM && LegacyCompatModelFormat.detectCryptoVersion(Files.readAllBytes(source)) == -1) {
+                return Component.translatable("gui.sparkle_morpher.import.error.invalid_ysm");
+            }
+        } catch (IOException error) {
+            return Component.translatable("gui.sparkle_morpher.import.error.local_storage");
+        }
+
+        ModelUploadSession session = new ModelUploadSession(modelId, fileName, source, deleteSourceOnCompletion);
+        instance = session;
+        notifyListeners();
+        ModelUploadTransport.UploadMetadata metadata = new ModelUploadTransport.UploadMetadata(
+                modelId, fileName, kind.wireName, sha256, totalBytes, visibility);
+        uploadTransport.upload(metadata, source, session::onProgress, session.cancelled::get)
+                .whenComplete((result, error) -> session.complete(result, error));
+        return null;
+    }
+
+    /**
+     * Standalone {@code exspm_hserverysm_model} channel flow: validate, then handshake with
+     * {@code sendStart}; chunk/finish pacing happens in {@link #tick()} once the server acks.
+     */
+    private static synchronized Component startOnUploadChannel(String modelId, String fileName, byte[] data,
+                                                               boolean syncSelectionOnComplete) {
+        if (instance != null && !instance.isTerminal()) {
+            return Component.translatable("gui.sparkle_morpher.import.error.in_progress");
         }
         if (!NetworkHandler.isClientConnected()) {
             return Component.translatable("gui.sparkle_morpher.import.error.waiting_handshake");
-        }
-        boolean uploadChannel = YsmUploadClientBridge.isChannelAvailable();
-        if (!uploadChannel && !ClientModelManager.isOysmServer()) {
-            return Component.translatable("gui.sparkle_morpher.import.error.waiting_handshake");
-        }
-        if (!uploadChannel && !ClientModelManager.isAllowUpload()) {
-            return Component.translatable("gui.sparkle_morpher.import.error.disabled_by_server");
         }
         if (serverLimitsKnown && data.length > lastMaxTotalBytes) {
             return Component.translatable("gui.sparkle_morpher.import.error.server_limit", formatBytes(lastMaxTotalBytes));
@@ -86,25 +204,12 @@ public final class ModelUploadSession {
         if (kind == ImportKind.ZIP && !isZipFile(data)) {
             return Component.translatable("gui.sparkle_morpher.import.error.invalid_zip");
         }
-        ModelUploadTransport activeTransport = chooseTransport();
-        ModelUploadSession session = new ModelUploadSession(modelId, fileName, data, syncSelectionOnComplete, activeTransport);
+        YsmUploadTransport transport = YsmUploadTransport.INSTANCE;
+        ModelUploadSession session = new ModelUploadSession(modelId, fileName, data, syncSelectionOnComplete, transport);
         instance = session;
         notifyListeners();
-        activeTransport.sendStart(modelId, fileName == null ? "" : fileName, data.length, session.sha256);
+        transport.sendStart(modelId, fileName == null ? "" : fileName, data.length, session.sha256);
         return null;
-    }
-
-    /** 切换上传传输实现；默认值由 legacy-compat 边界提供。 */
-    public static void setTransport(ModelUploadTransport transport) {
-        ModelUploadSession.transport = transport;
-    }
-
-    /** 选择上传通道：服务端协商了 exspm_hserverysm_model 独立频道时优先走独立服务端模组。 */
-    private static ModelUploadTransport chooseTransport() {
-        if (YsmUploadClientBridge.isChannelAvailable()) {
-            return YsmUploadTransport.INSTANCE;
-        }
-        return transport;
     }
 
     public static boolean hasServerLimits() {
@@ -120,12 +225,8 @@ public final class ModelUploadSession {
     }
 
     public static String formatBytes(int bytes) {
-        if (bytes < 1024) {
-            return bytes + " B";
-        }
-        if (bytes < 1024 * 1024) {
-            return String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0);
-        }
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0);
         return String.format(Locale.ROOT, "%.2f MB", bytes / (1024.0 * 1024.0));
     }
 
@@ -144,6 +245,7 @@ public final class ModelUploadSession {
         listeners.remove(listener);
     }
 
+    /** Standalone channel handshake ack (driven by {@link YsmUploadClientBridge}). */
     public static synchronized void onStartAck(long uploadId, byte status, int chunkSize, int maxTotalBytes, int chunksPerTick, String message) {
         if (maxTotalBytes > 0) {
             lastMaxTotalBytes = maxTotalBytes;
@@ -158,6 +260,7 @@ public final class ModelUploadSession {
         }
         if (status != 0) {
             session.fail(appendServerMessage(getRequestErrorText(status), message));
+            notifyListeners();
             return;
         }
         session.uploadId = uploadId;
@@ -168,6 +271,7 @@ public final class ModelUploadSession {
         notifyListeners();
     }
 
+    /** Standalone channel final result (driven by {@link YsmUploadClientBridge}). */
     public static synchronized void onResult(long uploadId, byte status, String modelId, long h1, long h2, String message) {
         ModelUploadSession session = instance;
         if (session == null || session.uploadId != uploadId) {
@@ -187,6 +291,7 @@ public final class ModelUploadSession {
         notifyListeners();
     }
 
+    /** Per-tick pacing for the standalone channel; no-op on Cloud sessions. */
     public static void tickCurrent() {
         ModelUploadSession session = instance;
         if (session != null) {
@@ -196,18 +301,15 @@ public final class ModelUploadSession {
 
     public static synchronized void failCurrent(Component reason) {
         ModelUploadSession session = instance;
-        if (session == null || session.isTerminal()) {
-            return;
-        }
+        if (session == null || session.isTerminal()) return;
+        session.cancelled.set(true);
         session.fail(reason);
         notifyListeners();
     }
 
     private static void notifyListeners() {
         ModelUploadSession session = instance;
-        for (Listener listener : listeners) {
-            listener.onSessionUpdate(session);
-        }
+        for (Listener listener : listeners) listener.onSessionUpdate(session);
     }
 
     private static boolean isYsmFile(byte[] data) {
@@ -273,8 +375,9 @@ public final class ModelUploadSession {
         };
     }
 
+    /** Standalone channel chunk pacing. */
     private synchronized void tick() {
-        if (state != State.UPLOADING) {
+        if (state != State.UPLOADING || sessionTransport == null || data == null) {
             return;
         }
         long perfStart = PerformanceProfiler.start();
@@ -299,74 +402,104 @@ public final class ModelUploadSession {
         notifyListeners();
     }
 
+    private void onProgress(long sent, long total) {
+        sentBytes = Math.min(Math.max(sent, 0), total);
+        state = State.UPLOADING;
+        message = Component.translatable("gui.sparkle_morpher.import.state.importing");
+        notifyListeners();
+    }
+
+    private synchronized void complete(ModelUploadTransport.UploadResult result, Throwable error) {
+        try {
+            if (error != null) {
+                fail(Component.literal(rootMessage(error)));
+            } else if (cancelled.get()) {
+                fail(Component.translatable("gui.sparkle_morpher.resource_station.cancelled"));
+            } else {
+                sentBytes = result.byteLength();
+                state = State.COMPLETED;
+                message = Component.translatable("gui.sparkle_morpher.import.state.imported_as", result.assetId());
+                // Cloud assets are not selected through the legacy Minecraft packet channel.
+                ClientModelManager.onUploadedModelImported(result.assetId());
+            }
+        } finally {
+            if (deleteSourceOnCompletion) {
+                try { Files.deleteIfExists(source); } catch (IOException ignored) { }
+            }
+            notifyListeners();
+        }
+    }
+
     private void fail(Component reason) {
         state = State.FAILED;
         message = reason;
+    }
+
+    private static String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) current = current.getCause();
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+    }
+
+    private static String extensionFor(String fileName) {
+        String lower = fileName == null ? "" : fileName.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".zip")) return ".zip";
+        if (lower.endsWith(".bbmodel")) return ".bbmodel";
+        if (lower.endsWith(".gltf")) return ".gltf";
+        if (lower.endsWith(".glb")) return ".glb";
+        return ".ysm";
     }
 
     public boolean isTerminal() {
         return state == State.COMPLETED || state == State.FAILED;
     }
 
-    public State getState() {
-        return state;
-    }
-
-    public String getModelId() {
-        return modelId;
-    }
-
-    public String getFileName() {
-        return fileName;
-    }
+    public State getState() { return state; }
+    public String getModelId() { return modelId; }
+    public String getFileName() { return fileName; }
 
     public int getTotalBytes() {
-        return data.length;
+        if (data != null) {
+            return data.length;
+        }
+        try { return (int) Math.min(Integer.MAX_VALUE, Files.size(source)); }
+        catch (IOException ignored) { return 0; }
     }
 
     public int getSentBytes() {
-        return Math.min(nextOffset, data.length);
+        if (data != null) {
+            return Math.min(nextOffset, data.length);
+        }
+        return (int) Math.min(Integer.MAX_VALUE, sentBytes);
     }
 
-    public Component getMessage() {
-        return message;
-    }
+    public Component getMessage() { return message; }
 
     public float getProgress() {
-        if (data.length == 0 || state == State.COMPLETED) {
+        if (state == State.COMPLETED) {
             return 1f;
         }
-        return (float) getSentBytes() / data.length;
+        int total = getTotalBytes();
+        return total <= 0 ? 0f : Math.min(1f, (float) getSentBytes() / total);
     }
 
-    public enum State {STARTING, UPLOADING, FINISHING, COMPLETED, FAILED}
+    public enum State { STARTING, UPLOADING, FINISHING, COMPLETED, FAILED }
 
     private enum ImportKind {
-        YSM,
-        ZIP,
-        BBMODEL,
-        UNKNOWN;
-
+        YSM("ysm"), ZIP("zip"), BBMODEL("bbmodel"), GLTF("gltf"), GLB("glb"), UNKNOWN("");
+        private final String wireName;
+        ImportKind(String wireName) { this.wireName = wireName; }
         private static ImportKind fromFileName(String fileName) {
-            if (fileName == null) {
-                return UNKNOWN;
-            }
+            if (fileName == null) return UNKNOWN;
             String lower = fileName.toLowerCase(Locale.ROOT);
-            if (lower.endsWith(".ysm")) {
-                return YSM;
-            }
-            if (lower.endsWith(".zip")) {
-                return ZIP;
-            }
-            if (lower.endsWith(".bbmodel")) {
-                return BBMODEL;
-            }
+            if (lower.endsWith(".ysm")) return YSM;
+            if (lower.endsWith(".zip")) return ZIP;
+            if (lower.endsWith(".bbmodel")) return BBMODEL;
+            if (lower.endsWith(".gltf")) return GLTF;
+            if (lower.endsWith(".glb")) return GLB;
             return UNKNOWN;
         }
     }
 
-    public interface Listener {
-        void onSessionUpdate(ModelUploadSession session);
-    }
+    public interface Listener { void onSessionUpdate(ModelUploadSession session); }
 }
-

@@ -1,8 +1,9 @@
 package com.micaftic.morpher.client.gui;
 
 import com.micaftic.morpher.client.ClientModelManager;
+import com.micaftic.morpher.client.gui.button.FlatColorButton;
 import com.micaftic.morpher.client.gui.button.IconButton;
-import com.micaftic.morpher.client.upload.ModelImportFilePicker;
+import com.micaftic.morpher.client.upload.picker.FilePickerCoordinator;
 import com.micaftic.morpher.client.upload.ModelUploadSession;
 import com.micaftic.morpher.model.ServerModelManager;
 import com.micaftic.morpher.util.ModelIdUtil;
@@ -32,7 +33,7 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
     private static final long MODEL_FOLDER_POLL_WINDOW_MS = 60000L;
 
     private final Screen parentScreen;
-    private final Queue<ModelImportFilePicker.PickedFile> pendingImports = new ArrayDeque<>();
+    private final Queue<FilePickerCoordinator.PickedFile> pendingImports = new ArrayDeque<>();
     private final Queue<LocalUploadFile> pendingLocalUploads = new ArrayDeque<>();
     private long lastFlashTime = 0L;
     private Component error = Component.empty();
@@ -47,6 +48,8 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
     private long lastModelFolderStamp = Long.MIN_VALUE;
     private float displayedProgress = 0f;
     private float prevProgressTarget = -1f;
+    private boolean publishToCommunity;
+    private FlatColorButton visibilityButton;
 
     public ModelUploadScreen(Screen parent) {
         super(Component.translatable("gui.sparkle_morpher.import.title"));
@@ -70,6 +73,12 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
         clearWidgets();
         ModelUploadSession.addListener(this);
         int buttonY = 10;
+        this.visibilityButton = new FlatColorButton(10, buttonY, 118, 18, visibilityLabel(), button -> {
+            this.publishToCommunity = !this.publishToCommunity;
+            this.visibilityButton.setMessage(visibilityLabel());
+        });
+        this.visibilityButton.setTooltipText("gui.sparkle_morpher.import.visibility.tooltip");
+        addRenderableWidget(this.visibilityButton);
         int toolbarX = Math.max(10, this.width - 76);
         addRenderableWidget(new IconButton(toolbarX, buttonY, 18, 18, 48, 0, button -> openFilePicker()).setTooltipText("gui.sparkle_morpher.import.choose_file"));
         addRenderableWidget(new IconButton(toolbarX + 24, buttonY, 18, 18, 64, 0, button -> openModelFolder()).setTooltipText("gui.sparkle_morpher.open_model_folder.open"));
@@ -80,7 +89,7 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
     public void removed() {
         ModelUploadSession.removeListener(this);
         ModelUploadSession.clearIfTerminal();
-        ModelImportFilePicker.cancelPicking();
+        FilePickerCoordinator.cancelPicking();
     }
 
     @Override
@@ -114,7 +123,7 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
         this.localStatus = Component.empty();
         this.serverStatus = Component.empty();
         this.lastFlashTime = Util.getMillis();
-        Component err = ModelImportFilePicker.pickYsmFile();
+        Component err = FilePickerCoordinator.pickYsmFile();
         if (err != null) {
             this.error = err;
         }
@@ -124,14 +133,14 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
         String fileName = path.getFileName() == null ? "" : path.getFileName().toString();
         try {
             if (Files.isDirectory(path)) {
-                this.pendingImports.add(ModelImportFilePicker.packDirectory(path));
+                this.pendingImports.add(FilePickerCoordinator.packDirectory(path));
                 return;
             }
-            if (!ModelImportFilePicker.isImportFileName(fileName)) {
+            if (!FilePickerCoordinator.isImportFileName(fileName)) {
                 this.error = Component.translatable("gui.sparkle_morpher.import.error.invalid_extension");
                 return;
             }
-            this.pendingImports.add(new ModelImportFilePicker.PickedFile(fileName, Files.readAllBytes(path)));
+            this.pendingImports.add(new FilePickerCoordinator.PickedFile(fileName, Files.readAllBytes(path)));
         } catch (IOException e) {
             this.error = Component.translatable("gui.sparkle_morpher.import.error.read_file", e.getMessage());
         }
@@ -154,7 +163,7 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
             try {
                 Path path = source.get();
                 if (Files.isDirectory(path)) {
-                    ModelImportFilePicker.PickedFile packed = ModelImportFilePicker.packDirectory(path);
+                    FilePickerCoordinator.PickedFile packed = FilePickerCoordinator.packDirectory(path);
                     this.pendingLocalUploads.add(new LocalUploadFile(modelId, modelId + ".zip", packed.data()));
                     queued++;
                     continue;
@@ -193,7 +202,7 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
         }
         this.localStatus = Component.translatable("gui.sparkle_morpher.import.state.local_upload_ready", file.modelId());
         this.localStatusColor = ChatFormatting.GREEN;
-        Component uploadError = ModelUploadSession.start(file.modelId(), file.fileName(), file.data());
+        Component uploadError = ModelUploadSession.start(file.modelId(), file.fileName(), file.data(), true, cloudVisibility());
         if (uploadError != null) {
             this.serverStatus = Component.translatable("gui.sparkle_morpher.import.state.server_upload_failed", uploadError);
             this.serverStatusColor = ChatFormatting.RED;
@@ -224,11 +233,11 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
         return "";
     }
 
-    private boolean importPickedFile(ModelImportFilePicker.PickedFile file) {
+    private boolean importPickedFile(FilePickerCoordinator.PickedFile file) {
         this.error = Component.empty();
         this.lastFlashTime = Util.getMillis();
         String fileName = file.fileName() == null ? "imported.ysm" : file.fileName();
-        if (!ModelImportFilePicker.isImportFileName(fileName)) {
+        if (!FilePickerCoordinator.isImportFileName(fileName)) {
             this.error = Component.translatable("gui.sparkle_morpher.import.error.invalid_extension");
             return false;
         }
@@ -277,7 +286,7 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
             return;
         }
 
-        Component uploadError = ModelUploadSession.start(modelId, fileName, data);
+        Component uploadError = ModelUploadSession.start(modelId, fileName, data, true, cloudVisibility());
         if (uploadError != null) {
             this.serverStatus = Component.translatable("gui.sparkle_morpher.import.state.server_upload_failed", uploadError);
             this.serverStatusColor = ChatFormatting.RED;
@@ -330,7 +339,7 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
             }
             return;
         }
-        ModelImportFilePicker.PickedFile next = this.pendingImports.poll();
+        FilePickerCoordinator.PickedFile next = this.pendingImports.poll();
         if (next != null && !importPickedFile(next)) {
             this.pendingImports.clear();
         }
@@ -404,13 +413,13 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
 
     @Override
     public void tick() {
-        ModelImportFilePicker.PickedFile pickedFile;
-        while ((pickedFile = ModelImportFilePicker.pollCompleted()) != null) {
+        FilePickerCoordinator.PickedFile pickedFile;
+        while ((pickedFile = FilePickerCoordinator.pollCompleted()) != null) {
             this.pendingImports.add(pickedFile);
         }
         pollModelFolderReload();
         startNextImportIfIdle();
-        Component pickerError = ModelImportFilePicker.consumeLastError();
+        Component pickerError = FilePickerCoordinator.consumeLastError();
         if (!pickerError.getString().isEmpty()) {
             this.error = pickerError;
         }
@@ -468,7 +477,7 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
     }
 
     private void renderEmptyState(GuiGraphics guiGraphics) {
-        MutableComponent main = Component.translatable(ModelImportFilePicker.isPicking() ? "gui.sparkle_morpher.import.select_in_manager" : "gui.sparkle_morpher.import.empty").withStyle(ChatFormatting.WHITE);
+        MutableComponent main = Component.translatable(FilePickerCoordinator.isPicking() ? "gui.sparkle_morpher.import.select_in_manager" : "gui.sparkle_morpher.import.empty").withStyle(ChatFormatting.WHITE);
         MutableComponent sub = Component.translatable("gui.sparkle_morpher.import.standalone_only").withStyle(ChatFormatting.GRAY);
         int cx = this.width / 2;
         int cy = this.height / 2;
@@ -557,6 +566,16 @@ public class ModelUploadScreen extends Screen implements ModelUploadSession.List
     }
 
     private record LocalUploadFile(String modelId, String fileName, byte[] data) {
+    }
+
+    private String cloudVisibility() {
+        return this.publishToCommunity ? "PUBLIC" : "PRIVATE";
+    }
+
+    private Component visibilityLabel() {
+        return Component.translatable(this.publishToCommunity
+                ? "gui.sparkle_morpher.import.visibility.public"
+                : "gui.sparkle_morpher.import.visibility.private");
     }
 
     @Override

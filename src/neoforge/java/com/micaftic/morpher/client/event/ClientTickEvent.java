@@ -5,10 +5,12 @@ import com.micaftic.morpher.audio.ObjectPool;
 import com.micaftic.morpher.capability.PlayerCapability;
 import com.micaftic.morpher.client.ClientModelManager;
 import com.micaftic.morpher.client.compat.ClientRenderCompatibilityRegistry;
+import com.micaftic.morpher.client.gui.resource.download.DownloadQueue;
 import com.micaftic.morpher.client.input.InputStateKey;
-import com.micaftic.morpher.client.upload.ModelUploadSession;
 import com.micaftic.morpher.client.upload.UploadManager;
 import com.micaftic.morpher.event.EntityJoinCallbackEvent;
+import com.micaftic.morpher.cloud.client.CloudClientRuntime;
+import com.micaftic.morpher.cloud.client.CloudMinecraftEntityProviders;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.neoforged.api.distmarker.Dist;
@@ -37,9 +39,13 @@ public final class ClientTickEvent {
         }
         tickCount++;
         InputStateKey.tick();
+        CloudMinecraftEntityProviders.tick();
+        CloudClientRuntime.drainClientTasks();
+        // Standalone exspm_hserverysm_model channel chunk pacing (no-op when idle/Cloud).
+        com.micaftic.morpher.client.upload.ModelUploadSession.tickCurrent();
         UploadManager.processPendingUploads();
         ClientRenderCompatibilityRegistry.tick();
-        ModelUploadSession.tickCurrent();
+        DownloadQueue.tick();
         ClientModelManager.flushPendingModels();
         ClientModelManager.tickSyncWatchdog();
         ClientModelManager.trimUnusedGpuCaches();

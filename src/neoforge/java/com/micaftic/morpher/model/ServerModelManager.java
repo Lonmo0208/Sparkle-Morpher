@@ -1,11 +1,11 @@
 package com.micaftic.morpher.model;
 
 import com.micaftic.morpher.YesSteveModel;
+import com.micaftic.morpher.event.CapabilityEvent;
 import com.micaftic.morpher.capability.AuthModelsCapability;
 import com.micaftic.morpher.capability.ModelInfoCapability;
 import com.micaftic.morpher.client.ExportResult;
 import com.micaftic.morpher.core.config.ConfigPolicies;
-import com.micaftic.morpher.core.model.ModelUploadSession;
 import com.micaftic.morpher.core.model.catalog.LocalModelScanner;
 import com.micaftic.morpher.core.storage.ModelStoragePaths;
 import com.micaftic.morpher.mixin.ConnectionAccessor;
@@ -16,14 +16,11 @@ import com.micaftic.morpher.model.format.ServerModelInfo;
 import com.micaftic.morpher.model.catalog.ServerModelCatalog;
 import com.micaftic.morpher.model.cache.ServerModelCache;
 import com.micaftic.morpher.model.format.UUIDComponentData;
-import com.micaftic.morpher.model.validation.UploadPolicy;
 import com.micaftic.morpher.network.NetworkHandler;
-import com.micaftic.morpher.legacy.compat.LegacyCompatNetwork;
-import com.micaftic.morpher.network.message.S2CModelSyncPayload;
 import com.micaftic.morpher.network.message.S2CSyncAuthModelsPacket;
 import com.micaftic.morpher.resource.YSMBinaryDeserializer;
 import com.micaftic.morpher.resource.YSMBinarySerializer;
-import com.micaftic.morpher.resource.YSMClientMapper;
+import com.micaftic.morpher.resource.bundle.GuiConfigMapper;
 import com.micaftic.morpher.resource.YSMFolderDeserializer;
 import com.micaftic.morpher.resource.pojo.RawYsmModel;
 import com.micaftic.morpher.util.DigestUtil;
@@ -77,8 +74,6 @@ import java.util.regex.PatternSyntaxException;
 import java.util.stream.Stream;
 
 public final class ServerModelManager {
-    private static final long UPLOAD_SESSION_TIMEOUT_MS = 120_000L;
-    private static final int UPLOAD_CHUNK_SIZE = 32_000;
     private static final String EXT_YSM = ".ysm";
     private static final String EXT_ZIP = ".zip";
     private static final String EXT_BBMODEL = ".bbmodel";
@@ -112,7 +107,6 @@ public final class ServerModelManager {
     static final ServerModelCatalog<ServerModelData> CATALOG = new ServerModelCatalog<>();
 
         static final Map<String, ServerPackData> packs = new ConcurrentHashMap<>();
-    private static final Map<Long, ModelUploadSession> uploadStates = new ConcurrentHashMap<>();
     static final SecureRandom theRandom = new SecureRandom();
     public static volatile byte[] serverKey;
     private static volatile boolean initialized = false;
@@ -411,19 +405,6 @@ public final class ServerModelManager {
             }
         }
     }
-
-    // R8 遗留③：legacy 握手同步协议（PlayerSyncState/step 状态机/发包）迁至 LegacyModelSyncProtocol
-
-
-
-    public static void nativeSendModelData(UUID uuid, @Nullable ByteBuffer data) {
-
-        LegacyCompatNetwork.sendModelData(uuid, data);
-
-    }
-
-
-
 
     public static boolean nativeLoadModels(Object callback) {
         try {
@@ -745,7 +726,7 @@ public final class ServerModelManager {
 
 
     private static ServerModelData mapToDataClass(String modelId, RawYsmModel raw, boolean isAuth, boolean isCustomSkinModel) {
-        ServerModelInfo serverModelInfo = YSMClientMapper.buildModelInfo(raw);
+        ServerModelInfo serverModelInfo = GuiConfigMapper.buildModelInfo(raw);
         // Animations
         Map<String, String[]> animMap = new HashMap<>();
         for (Map.Entry<String, RawYsmModel.RawAnimationFile> e : raw.mainEntity.animationFiles.entrySet()) {
@@ -759,19 +740,6 @@ public final class ServerModelManager {
         Object[] vehicles = raw.vehicles.values().stream().map(v -> v.matchIds != null ? v.matchIds : new String[]{v.identifier}).toArray();
         return new ServerModelData(modelId, animInfo, projectiles, vehicles, serverModelInfo, isCustomSkinModel, isAuth);
     }
-
-    // R8 遗留③：legacy 握手同步协议（nativeSyncModels/sendPacket03/sendPacket05）迁至 LegacyModelSyncProtocol
-
-
-
-    public static void nativeSyncModels(UUID[] uuids, String[] playerNames, String[] modelIds, Object callback) {
-
-        LegacyCompatNetwork.syncModels(uuids, playerNames, modelIds, callback);
-
-    }
-
-
-
 
     public static void nativeExportModel(String modelID, @Nullable String extra, @Nullable Consumer<ExportResult> callback) {
         YSMThreadPool.submit(() -> {
@@ -863,142 +831,6 @@ public final class ServerModelManager {
         }
     }
 
-    public static int getModelUploadMaxBytes() {
-        try {
-            return Math.max(1, ConfigPolicies.network().modelUploadMaxMiB()) * 1024 * 1024;
-        } catch (IllegalStateException e) {
-            return 128 * 1024 * 1024;
-        }
-    }
-
-    public static int getModelUploadChunksPerTick() {
-        try {
-            return Math.max(1, ConfigPolicies.network().modelUploadChunksPerTick());
-        } catch (IllegalStateException e) {
-            return 4;
-        }
-    }
-
-    public static UploadStartResult beginModelUpload(ServerPlayer sender, String requestedModelId, String fileName, int totalBytes, String sha256) {
-        cleanupExpiredUploads();
-        // R8 遗留②：上传校验链抽到 UploadPolicy（纯判定 + 拒绝码/消息）
-        String modelId = normalizeUploadedModelId(requestedModelId);
-        LocalModelScanner.Kind importKind = LocalModelScanner.kindFromFileName(fileName);
-        int maxBytes = getModelUploadMaxBytes();
-        UploadPolicy.RejectReason reason = UploadPolicy.validate(
-                isModelUploadAllowed(),
-                sender != null && NetworkHandler.isPlayerConnected(sender),
-                modelId,
-                importKind != LocalModelScanner.Kind.UNKNOWN,
-                sha256,
-                totalBytes,
-                maxBytes,
-                CATALOG.contains(modelId) || uploadStates.values().stream().anyMatch(state -> state.modelId().equals(modelId)));
-        if (reason != UploadPolicy.RejectReason.NONE) {
-            return UploadStartResult.reject(UploadPolicy.statusCode(reason), UploadPolicy.statusMessage(reason));
-        }
-
-        long uploadId;
-        do {
-            uploadId = theRandom.nextLong();
-        } while (uploadId == 0L || uploadStates.containsKey(uploadId));
-
-        ModelUploadSession state = new ModelUploadSession(uploadId, sender.getUUID(), modelId, fileName, importKind, totalBytes, sha256.toLowerCase(Locale.ROOT));
-        uploadStates.put(uploadId, state);
-        return new UploadStartResult(uploadId, (byte) 0, UPLOAD_CHUNK_SIZE, maxBytes, getModelUploadChunksPerTick(), "");
-    }
-
-    public static void receiveModelUploadChunk(ServerPlayer sender, long uploadId, int offset, byte[] data) {
-        ModelUploadSession state = uploadStates.get(uploadId);
-        if (state == null || sender == null || !state.owner().equals(sender.getUUID())) {
-            return;
-        }
-        acquireGlobalBandwidth(data == null ? 0 : data.length);
-        // R8-5：接收进度推进/校验集中到 ModelUploadSession（含 touch 与 failed 标记）
-        state.appendChunk(offset, data);
-    }
-
-    public static UploadFinishResult finishModelUpload(ServerPlayer sender, long uploadId) {
-        long finishPerfStart = PerformanceProfiler.start();
-        ModelUploadSession state = uploadStates.remove(uploadId);
-        if (state == null || sender == null || !state.owner().equals(sender.getUUID())) {
-            return UploadFinishResult.reject(uploadId, (byte) 4, "Session expired");
-        }
-        if (!state.isComplete()) {
-            return UploadFinishResult.reject(uploadId, (byte) 5, "Incomplete upload");
-        }
-        String actualSha256 = DigestUtil.sha256Hex(state.data());
-        if (!state.sha256().equals(actualSha256)) {
-            YesSteveModel.LOGGER.warn("[SM] Import transfer hash mismatch modelId={} file={} type={} declaredSha256={} actualSha256={} bytes={} received={}",
-                    state.modelId(), state.fileName(), state.importKind(), state.sha256(), actualSha256, state.data().length, state.receivedBytes());
-            return UploadFinishResult.reject(uploadId, (byte) 1, "Hash mismatch");
-        }
-
-        RawYsmModel rawModel;
-        try {
-            rawModel = parseUploadedModel(state.data(), "import:" + state.fileName(), state.importKind());
-        } catch (Exception e) {
-            YesSteveModel.LOGGER.error("[SM] Failed to parse imported model modelId={} file={} type={} rawSha256={} bytes={}",
-                    state.modelId(), state.fileName(), state.importKind(), actualSha256, state.data().length, e);
-            return UploadFinishResult.reject(uploadId, (byte) 2, e.getMessage());
-        }
-
-        try {
-            if (processAndCacheModel(state.modelId(), rawModel, CACHE_SERVER, false, new HashSet<>()) == null) {
-                return UploadFinishResult.reject(uploadId, (byte) 2, "Server failed to cache model");
-            }
-            Path target = CUSTOM.resolve(state.modelId() + LocalModelScanner.extensionFor(state.importKind())).normalize();
-            Path customRoot = CUSTOM.toAbsolutePath().normalize();
-            Path absoluteTarget = target.toAbsolutePath().normalize();
-            if (!absoluteTarget.startsWith(customRoot)) {
-                return UploadFinishResult.reject(uploadId, (byte) 6, "Server rejected write");
-            }
-            Files.createDirectories(absoluteTarget.getParent());
-            Path temp = Files.createTempFile(absoluteTarget.getParent(), absoluteTarget.getFileName().toString(), ".tmp");
-            Files.write(temp, state.data());
-            try {
-                Files.move(temp, absoluteTarget, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temp, absoluteTarget, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (Exception e) {
-            YesSteveModel.LOGGER.error("[SM] Failed to store imported model: " + state.modelId(), e);
-            return UploadFinishResult.reject(uploadId, (byte) 3, e.getMessage());
-        }
-
-        ModelLoadResult reloadResult = reloadModelsAfterImport();
-        if (!reloadResult.isSuccess()) {
-            Component errorMessage = reloadResult.getErrorMessage();
-            return UploadFinishResult.reject(uploadId, (byte) 8, errorMessage == null ? "Imported model scan failed" : errorMessage.getString());
-        }
-        if (!reloadResult.getModelDefinitions().containsKey(state.modelId())) {
-            YesSteveModel.LOGGER.warn("[SM] Imported model was written but not visible after scan: modelId={} file={} type={} rawSha256={} contentHash={}",
-                    state.modelId(), state.fileName(), state.importKind(), actualSha256, rawModel.properties.sha256);
-            return UploadFinishResult.reject(uploadId, (byte) 8, "Imported model is not visible after scan");
-        }
-
-        YesSteveModel.LOGGER.info("[SM] Imported model '{}' from {} as {}", state.modelId(), sender.getGameProfile().getName(), state.importKind());
-        PerformanceProfiler.logElapsed("server_upload_finish", state.modelId(), finishPerfStart,
-                "bytes=" + state.data().length + " type=" + state.importKind());
-        long[] hashes = YsmCrypt.calculateModelHashes(rawModel.properties.sha256, serverKey);
-        return new UploadFinishResult(uploadId, (byte) 0, state.modelId(), hashes[0], hashes[1], "");
-    }
-
-    private static ModelLoadResult reloadModelsAfterImport() {
-        long perfStart = PerformanceProfiler.start();
-        try {
-            ModelLoadResult result = loadModelsSnapshot();
-            onModelLoadComplete(result, null);
-            syncLoadedModelsToPlayers();
-            PerformanceProfiler.logElapsed("server_reload_after_import", null, perfStart,
-                    "models=" + result.getModelDefinitions().size() + " auth=" + result.getAuthModelIds().size());
-            return result;
-        } catch (Exception e) {
-            YesSteveModel.LOGGER.error("[SM] Failed to reload models after import", e);
-            return new ModelLoadResult(false, Component.literal(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()), null, null);
-        }
-    }
-
     private static void cleanupServerCache(Set<String> validCacheFiles) {
         try (Stream<Path> stream = Files.list(CACHE_SERVER)) {
             stream.forEach(file -> {
@@ -1049,65 +881,7 @@ public final class ServerModelManager {
         }
     }
 
-    private static void syncLoadedModelsToPlayers() {
-        MinecraftServer currentServer = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
-        if (currentServer == null) {
-            return;
-        }
-        currentServer.execute(() -> {
-            List<ServerPlayer> players = currentServer.getPlayerList().getPlayers();
-            for (ServerPlayer player : players) {
-                PlayerModelSelectionStore.restore(player);
-                validatePlayerModel(player);
-            }
-            nativeSyncModels(players.stream().filter(NetworkHandler::isPlayerConnected).map(ServerPlayer::getUUID).toArray(UUID[]::new),
-                    players.stream().filter(NetworkHandler::isPlayerConnected).map(serverPlayer -> serverPlayer.getGameProfile().getName()).toArray(String[]::new),
-                    collectPlayerModelIds(players),
-                    null);
-        });
-    }
-
-    @Nullable
-    private static String normalizeUploadedModelId(@Nullable String modelId) {
-        String normalized = ModelIdUtil.normalizeImportModelId(modelId);
-        boolean stripped;
-        do {
-            stripped = false;
-            for (String extension : new String[]{EXT_YSM, EXT_ZIP, EXT_BBMODEL}) {
-                if (normalized.endsWith(extension)) {
-                    normalized = normalized.substring(0, normalized.length() - extension.length());
-                    stripped = true;
-                }
-            }
-        } while (stripped);
-        normalized = ModelIdUtil.normalizeImportModelId(normalized);
-        if (!ModelIdUtil.isValidModelId(normalized)) {
-            return null;
-        }
-        return normalized;
-    }
-
-    private static void cleanupExpiredUploads() {
-        long now = System.currentTimeMillis();
-        uploadStates.entrySet().removeIf(entry -> entry.getValue().isExpired(now, UPLOAD_SESSION_TIMEOUT_MS));
-    }
-
-    public static void requestPlayerAuth(ServerPlayer serverPlayer, @Nullable Consumer<UUIDComponentData> consumer) {
-        MinecraftServer currentServer = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
-        currentServer.execute(() -> {
-            List<ServerPlayer> players = currentServer.getPlayerList().getPlayers();
-            ArrayList<FloatReferencePair<ServerPlayer>> arrayList = new ArrayList<>();
-            for (ServerPlayer serverPlayer2 : players) {
-                if (serverPlayer2.level().dimensionType() == serverPlayer.level().dimensionType()) {
-                    arrayList.add(FloatReferencePair.of(serverPlayer2.distanceTo(serverPlayer), serverPlayer2));
-                }
-            }
-            arrayList.sort((a, b) -> Float.compare(a.firstFloat(), b.firstFloat()));
-            nativeSyncModels(new UUID[]{serverPlayer.getUUID()}, new String[]{serverPlayer.getGameProfile().getName()}, collectPlayerModelIds(arrayList.stream().map(it.unimi.dsi.fastutil.Pair::second).toList()), consumer);
-        });
-    }
-
-    public static boolean loadModels(@Nullable Consumer<ModelLoadResult> consumer, @Nullable Consumer<UUIDComponentData> consumer2) {
+    public static boolean loadModels(@Nullable Consumer<ModelLoadResult> consumer) {
         Consumer<ModelLoadResult> action = modelLoadResult -> {
             if (consumer != null) {
                 consumer.accept(modelLoadResult);
@@ -1122,7 +896,6 @@ public final class ServerModelManager {
                     PlayerModelSelectionStore.restore(value);
                     validatePlayerModel(value);
                 }
-                nativeSyncModels(players.stream().filter(NetworkHandler::isPlayerConnected).map((player) -> player.getUUID()).toArray(i -> new UUID[i]), players.stream().filter(NetworkHandler::isPlayerConnected).map(serverPlayer -> serverPlayer.getGameProfile().getName()).toArray(i2 -> new String[i2]), collectPlayerModelIds(players), consumer2);
             });
         };
         initialized = false;
@@ -1139,10 +912,6 @@ public final class ServerModelManager {
 
     private static void publishModelLoadResult(ModelLoadResult result) {
         onModelLoadComplete(result, null);
-    }
-
-    private static String[] collectPlayerModelIds(Collection<ServerPlayer> collection) {
-        return collection.stream().filter(NetworkHandler::isPlayerConnected).map(serverPlayer -> ModelInfoCapability.get(serverPlayer).map(ModelInfoCapability::getModelId)).filter(Optional::isPresent).map(Optional::get).distinct().toArray(String[]::new);
     }
 
     private static void onModelLoadComplete(ModelLoadResult modelLoadResult, @Nullable Object obj) {
@@ -1176,23 +945,6 @@ public final class ServerModelManager {
             consumer.accept(modelLoadResult);
         }
     }
-
-    public static void syncModelToPlayer(UUID uuid) {
-        nativeSendModelData(uuid, null);
-    }
-
-    // R8 遗留③：legacy 同步会话清理/发送 helper（getPlayerConnection/sendModelData/等）迁至 LegacyModelSyncProtocol
-
-
-
-    public static void clearPlayerSyncState(UUID uuid) {
-
-        LegacyCompatNetwork.clearPlayerSyncState(uuid);
-
-    }
-
-
-
 
     public static Pair<String, String> getDefaultModelConfig() {
         String defaultModelId = ConfigPolicies.network().defaultModelId();
@@ -1298,18 +1050,6 @@ public final class ServerModelManager {
             });
         } else {
             NetworkOnlineDebugLog.info("validatePlayerModel: SKIP cache_empty");
-        }
-    }
-
-    public record UploadStartResult(long uploadId, byte status, int chunkSize, int maxTotalBytes, int chunksPerTick, String message) {
-        private static UploadStartResult reject(byte status, String message) {
-            return new UploadStartResult(0L, status, UPLOAD_CHUNK_SIZE, getModelUploadMaxBytes(), getModelUploadChunksPerTick(), message);
-        }
-    }
-
-    public record UploadFinishResult(long uploadId, byte status, String modelId, long hash1, long hash2, String message) {
-        private static UploadFinishResult reject(long uploadId, byte status, String message) {
-            return new UploadFinishResult(uploadId, status, "", 0L, 0L, message);
         }
     }
 

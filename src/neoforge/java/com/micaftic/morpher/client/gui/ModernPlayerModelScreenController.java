@@ -1,17 +1,23 @@
 package com.micaftic.morpher.client.gui;
 
+import com.micaftic.morpher.cloud.client.CloudAssetPage;
+import com.micaftic.morpher.cloud.client.CloudAssetSummary;
+import com.micaftic.morpher.core.model.CloudAssetIdentity;
+import com.micaftic.morpher.core.model.CloudAssetIdentity;
+import com.micaftic.morpher.cloud.client.CloudClientRuntime;
+import com.micaftic.morpher.cloud.client.CloudModelSelectionStore;
 import com.micaftic.morpher.capability.PlayerCapability;
 import com.micaftic.morpher.capability.StarModelsCapability;
 import com.micaftic.morpher.client.ClientModelManager;
 import com.micaftic.morpher.client.PrivacyMode;
 import com.micaftic.morpher.client.gui.resource.ModelRepoClient;
 import com.micaftic.morpher.client.gui.resource.ModelRepoEntry;
-import com.micaftic.morpher.client.gui.resource.ResourceDownloadManager;
+import com.micaftic.morpher.client.gui.resource.download.DownloadQueue;
 import com.micaftic.morpher.client.gui.resource.ResourceStationConfig;
 import com.micaftic.morpher.client.model.ModelAssembly;
 import com.micaftic.morpher.client.texture.OuterFileTexture;
 import com.micaftic.morpher.client.upload.IResourceLocatable;
-import com.micaftic.morpher.client.upload.ModelImportFilePicker;
+import com.micaftic.morpher.client.upload.picker.FilePickerCoordinator;
 import com.micaftic.morpher.client.upload.ModelUploadSession;
 import com.micaftic.morpher.client.upload.UploadManager;
 import com.micaftic.morpher.config.GeneralConfig;
@@ -105,7 +111,7 @@ public final class ModernPlayerModelScreenController {
     private ResourceStationConfig.State resourceConfig = ResourceStationConfig.load();
     private final List<ModelRepoEntry> resourceEntries = new ArrayList<>();
     private final Set<String> selectedResourceUrls = new LinkedHashSet<>();
-    private final Queue<ModelImportFilePicker.PickedFile> pendingImports = new ArrayDeque<>();
+    private final Queue<FilePickerCoordinator.PickedFile> pendingImports = new ArrayDeque<>();
     private boolean localImportInProgress;
     private int screenGeneration;
 
@@ -303,59 +309,59 @@ public final class ModernPlayerModelScreenController {
 
     /** 入队单个资源；返回是否入队成功（原 {@code enqueueResource} 的判定部分）。 */
     public boolean enqueueResource(ModelRepoEntry entry) {
-        return ResourceDownloadManager.enqueue(entry, this.resourceConfig);
+        return DownloadQueue.enqueue(entry, this.resourceConfig);
     }
 
     /** 入队选中项（无选中则整页）；返回新增数量（原 {@code enqueueSelectedResources} 的判定部分）。 */
     public int enqueueSelectedResources() {
         List<ModelRepoEntry> selected = this.resourceEntries.stream().filter(e -> this.selectedResourceUrls.contains(e.url())).toList();
-        return ResourceDownloadManager.enqueueAll(selected.isEmpty() ? filteredResources() : selected, this.resourceConfig);
+        return DownloadQueue.enqueueAll(selected.isEmpty() ? filteredResources() : selected, this.resourceConfig);
     }
 
     public boolean isQueued(ModelRepoEntry entry) {
-        return ResourceDownloadManager.isQueued(entry);
+        return DownloadQueue.isQueued(entry);
     }
 
-    /** 驱动下载队列（原 {@code tick()} 中的 {@code ResourceDownloadManager.tick()}）。 */
+    /** 驱动下载队列。 */
     public void tickDownloads() {
-        ResourceDownloadManager.tick();
+        DownloadQueue.tick();
     }
 
     public void clearFinishedDownloads() {
-        ResourceDownloadManager.clearFinished();
+        DownloadQueue.clearFinished();
     }
 
     public void cancelCurrentDownload() {
-        ResourceDownloadManager.cancelCurrent();
+        DownloadQueue.cancelCurrent();
     }
 
     /** 队列视图：未完成在前、已完成最多 8 条（顺序与原渲染代码一致）。 */
     public List<TaskView> queueRows() {
-        ResourceDownloadManager.Snapshot snapshot = ResourceDownloadManager.snapshot();
+        DownloadQueue.Snapshot snapshot = DownloadQueue.snapshot();
         List<TaskView> rows = new ArrayList<>();
-        for (ResourceDownloadManager.TaskSnapshot task : snapshot.unfinishedTasks()) {
+        for (DownloadQueue.TaskSnapshot task : snapshot.unfinishedTasks()) {
             rows.add(toView(task));
         }
-        for (ResourceDownloadManager.TaskSnapshot task : snapshot.finishedTasks().stream().limit(8).toList()) {
+        for (DownloadQueue.TaskSnapshot task : snapshot.finishedTasks().stream().limit(8).toList()) {
             rows.add(toView(task));
         }
         return rows;
     }
 
     public Component queueStatus() {
-        return ResourceDownloadManager.snapshot().status();
+        return DownloadQueue.snapshot().status();
     }
 
     public ChatFormatting queueStatusColor() {
-        return ResourceDownloadManager.snapshot().statusColor();
+        return DownloadQueue.snapshot().statusColor();
     }
 
-    private static TaskView toView(ResourceDownloadManager.TaskSnapshot task) {
+    private static TaskView toView(DownloadQueue.TaskSnapshot task) {
         return new TaskView(task.name(), task.progress(), taskStateColor(task.state()));
     }
 
     /** 任务状态 → 进度条颜色（原 Screen 内 {@code stateColor}，数值不变）。 */
-    private static int taskStateColor(ResourceDownloadManager.TaskState state) {
+    private static int taskStateColor(DownloadQueue.TaskState state) {
         return switch (state) {
             case DONE -> 0xFF4CAF50;
             case FAILED -> 0xFFD23232;
@@ -379,21 +385,21 @@ public final class ModernPlayerModelScreenController {
 
     /** 取消系统文件选择框（原 {@code removed()} 中的 cancelPicking）。 */
     public void cancelPicking() {
-        ModelImportFilePicker.cancelPicking();
+        FilePickerCoordinator.cancelPicking();
     }
 
     /** 打开 .ysm 文件选择框；返回错误（无错误返回 null）。 */
     public Component pickYsmFile() {
-        return ModelImportFilePicker.pickYsmFile();
+        return FilePickerCoordinator.pickYsmFile();
     }
 
     /** 轮询已完成的选择 + 错误，并推进队列（原 {@code pollImports}）。 */
     public void pollImports() {
-        ModelImportFilePicker.PickedFile picked;
-        while ((picked = ModelImportFilePicker.pollCompleted()) != null) {
+        FilePickerCoordinator.PickedFile picked;
+        while ((picked = FilePickerCoordinator.pollCompleted()) != null) {
             this.pendingImports.add(picked);
         }
-        Component pickerError = ModelImportFilePicker.consumeLastError();
+        Component pickerError = FilePickerCoordinator.consumeLastError();
         if (!pickerError.getString().isEmpty()) {
             this.host.postStatus(pickerError, ChatFormatting.RED);
         }
@@ -404,9 +410,9 @@ public final class ModernPlayerModelScreenController {
     public void enqueueImportPath(Path path) {
         try {
             if (Files.isDirectory(path)) {
-                this.pendingImports.add(ModelImportFilePicker.packDirectory(path));
-            } else if (ModelImportFilePicker.isImportFileName(path.getFileName().toString())) {
-                this.pendingImports.add(new ModelImportFilePicker.PickedFile(path.getFileName().toString(), Files.readAllBytes(path)));
+                this.pendingImports.add(FilePickerCoordinator.packDirectory(path));
+            } else if (FilePickerCoordinator.isImportFileName(path.getFileName().toString())) {
+                this.pendingImports.add(new FilePickerCoordinator.PickedFile(path.getFileName().toString(), Files.readAllBytes(path)));
             }
         } catch (IOException e) {
             this.host.postStatus(Component.translatable("gui.sparkle_morpher.import.error.read_file", e.getMessage()), ChatFormatting.RED);
@@ -422,7 +428,7 @@ public final class ModernPlayerModelScreenController {
         if (existing != null && !existing.isTerminal()) {
             return;
         }
-        ModelImportFilePicker.PickedFile file = this.pendingImports.poll();
+        FilePickerCoordinator.PickedFile file = this.pendingImports.poll();
         if (file == null) {
             return;
         }
@@ -550,15 +556,19 @@ public final class ModernPlayerModelScreenController {
     }
 
     public Set<String> availableModelIds() {
-        return ClientModelManager.getAvailableModelIds();
+        return ClientModelManager.getAvailableModelIds().stream()
+                .filter(modelId -> !CloudAssetIdentity.isRuntimeModelId(modelId))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     public int availableModelCount() {
-        return ClientModelManager.getAvailableModelIds().size();
+        return availableModelIds().size();
     }
 
     public Map<String, ModelAssembly> modelAssemblyMap() {
-        return ClientModelManager.getModelAssemblyMap();
+        return ClientModelManager.getModelAssemblyMap().entrySet().stream()
+                .filter(entry -> !CloudAssetIdentity.isRuntimeModelId(entry.getKey()))
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     public Optional<ModelAssembly> lookupAssembly(String modelId) {
@@ -578,7 +588,52 @@ public final class ModernPlayerModelScreenController {
     }
 
     public boolean isLocalOnlyModel(String modelId) {
-        return ClientModelManager.isLocalOnlyModel(modelId);
+        return !CloudAssetIdentity.isRuntimeModelId(modelId) && ClientModelManager.isLocalOnlyModel(modelId);
+    }
+
+    public boolean isServerModel(String modelId) { return ClientModelManager.isServerModel(modelId); }
+    public boolean cloudAvailable() { return CloudClientRuntime.isConfigured(); }
+    public String cloudInstanceId() { return CloudClientRuntime.state() == null ? "" : CloudClientRuntime.state().instance().instanceId(); }
+    public CompletableFuture<CloudAssetPage> listCloudAssets(String scope, String query, String cursor, int limit) {
+        if (!cloudAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("Cloud is not connected"));
+        return CloudClientRuntime.listAssetsPage(scope, query, cursor, limit);
+    }
+    public List<CloudAssetSummary> recentCloudAssets() { return cloudAvailable() ? CloudModelSelectionStore.recent(cloudInstanceId()) : List.of(); }
+    public List<CloudAssetSummary> favoriteCloudAssets() { return cloudAvailable() ? CloudModelSelectionStore.favorites(cloudInstanceId()) : List.of(); }
+    public boolean isCloudFavorite(CloudAssetSummary summary) { return cloudAvailable() && CloudModelSelectionStore.isFavorite(cloudInstanceId(), summary.ref().assetId()); }
+    public boolean toggleCloudFavorite(CloudAssetSummary summary) { return cloudAvailable() && CloudModelSelectionStore.toggleFavorite(cloudInstanceId(), summary); }
+    public void markCloudApplied(CloudAssetSummary summary) { if (cloudAvailable()) CloudModelSelectionStore.recordApplied(cloudInstanceId(), summary); }
+    public String cloudModelId(CloudAssetSummary summary) {
+        CloudClientRuntime.RuntimeState runtime = CloudClientRuntime.state();
+        if (runtime == null) throw new IllegalStateException("Cloud runtime is not configured");
+        return cloudIdentity(runtime, summary).runtimeModelId();
+    }
+    public void importCloudAsset(CloudAssetSummary summary, Consumer<Component> callback) {
+        CloudClientRuntime.RuntimeState expectedRuntime = CloudClientRuntime.state();
+        if (expectedRuntime == null) { callback.accept(Component.translatable("gui.sparkle_morpher.cloud.disconnected")); return; }
+        String modelId = cloudIdentity(expectedRuntime, summary).runtimeModelId();
+        CloudClientRuntime.rememberCloudAsset(summary);
+        CloudClientRuntime.materializeAsset(summary.ref()).thenApplyAsync(path -> {
+            try { return Files.readAllBytes(path); } catch (IOException e) { throw new java.util.concurrent.CompletionException(e); }
+        }).whenComplete((bytes, failure) -> Minecraft.getInstance().execute(() -> {
+            if (CloudClientRuntime.state() != expectedRuntime) { callback.accept(Component.translatable("gui.sparkle_morpher.cloud.disconnected")); return; }
+            if (failure != null) { callback.accept(Component.translatable("gui.sparkle_morpher.cloud.search_failed", rootMessage(failure))); return; }
+            ClientModelManager.importLocalModel(modelId, cloudFileName(summary), bytes, error -> {
+                if (error == null) CloudModelSelectionStore.recordApplied(cloudInstanceId(), summary);
+                callback.accept(error);
+            });
+        }));
+    }
+    private static CloudAssetIdentity cloudIdentity(CloudClientRuntime.RuntimeState runtime, CloudAssetSummary summary) {
+        return new CloudAssetIdentity(runtime.instance().instanceId(), "catalog", summary.ref().assetId(),
+                Long.toString(summary.ref().revision()), summary.ref().rawSha256());
+    }
+    private static String cloudFileName(CloudAssetSummary summary) {
+        String name = summary.name().isBlank() ? summary.ref().assetId() : summary.name();
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".ysm") || lower.endsWith(".zip") || lower.endsWith(".bbmodel") || lower.endsWith(".gltf") || lower.endsWith(".glb")) return name;
+        String format = summary.format().toLowerCase(Locale.ROOT);
+        return name + (format.contains("bbmodel") ? ".bbmodel" : format.contains("zip") ? ".zip" : format.contains("gltf") ? ".gltf" : ".ysm");
     }
 
     public void markModelUsed(String modelId) {
