@@ -1888,7 +1888,6 @@ public class ModernPlayerModelScreen extends Screen {
             // without ysm-pack.json entries. Otherwise those models are loaded but
             // cannot be reached through the model browser path navigation.
             for (String modelId : this.controller.availableModelIds()) {
-                if (this.controller.isServerModel(modelId)) continue;
                 if (!modelId.startsWith(STATE.currentPath)) {
                     continue;
                 }
@@ -1909,7 +1908,6 @@ public class ModernPlayerModelScreen extends Screen {
         Map<String, ModelAssembly> assemblyMap = this.controller.modelAssemblyMap();
         for (var entry : assemblyMap.entrySet()) {
             String modelId = entry.getKey();
-            if (this.controller.isServerModel(modelId)) continue;
             ModelAssembly assembly = entry.getValue();
             if (!matchesModelSource(modelId)) {
                 continue;
@@ -1928,7 +1926,9 @@ public class ModernPlayerModelScreen extends Screen {
         }
 for (String modelId : this.controller.availableModelIds()) {
             if (assemblyMap.containsKey(modelId)) continue;
-            if (this.controller.isServerModel(modelId)) continue;
+            // 服务端同步下来的模型（LegacyModelCacheClient → serverModels）必须可按来源筛选后列出：
+            // 上游 cloud 提交曾在此直接跳过服务端模型，导致"计数量有 200+、列表里只有本地几个"。
+            if (!matchesModelSource(modelId)) continue;
             if (!searching && !isDirectModel(STATE.currentPath, modelId)) continue;
             if (!STATE.modelFilter.matchesAvailability(this.controller.isLocalOnlyModel(modelId))) continue;
             boolean authModel = this.controller.isAuthModel(modelId);
