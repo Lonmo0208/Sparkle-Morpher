@@ -1,5 +1,6 @@
 package com.micaftic.morpher.client.animation;
 
+import com.micaftic.morpher.YesSteveModel;
 import com.micaftic.morpher.client.entity.CustomPlayerEntity;
 import com.micaftic.morpher.core.compat.parcool.ParcoolCompat;
 import com.micaftic.morpher.core.compat.slashblade.SlashBladeCompat;
@@ -14,6 +15,7 @@ import com.micaftic.morpher.geckolib3.core.event.predicate.AnimationEvent;
 import com.micaftic.morpher.geckolib3.core.enums.PlayState;
 import com.micaftic.morpher.molang.runtime.ExpressionEvaluator;
 import com.micaftic.morpher.core.compat.create.CreateCompat;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ReferenceArrayList;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
@@ -25,6 +27,9 @@ import java.util.function.BiPredicate;
 public class AnimationManager implements IAnimationPredicate<CustomPlayerEntity> {
 
     private static final ReferenceArrayList<AnimationState<Player, CustomPlayerEntity>>[] data = new ReferenceArrayList[Priority.LOWEST + 1];
+
+    /** 本次死亡是否已打印过诊断（离开死亡状态时清除，见 {@link #logDeathDiagnostic}）。 */
+    private static final IntOpenHashSet DEATH_DIAGNOSED = new IntOpenHashSet();
 
     static {
         for (int i = 0; i < data.length; i++) {
@@ -122,6 +127,9 @@ public class AnimationManager implements IAnimationPredicate<CustomPlayerEntity>
         if (animationBundle == null) {
             return PlayState.STOP;
         }
+        if (!player.isDeadOrDying() && !player.isRemoved()) {
+            DEATH_DIAGNOSED.remove(player.getId());
+        }
         if (ParcoolCompat.isPlayerParcooling(player)) {
             return PlayState.STOP;
         }
@@ -136,6 +144,9 @@ public class AnimationManager implements IAnimationPredicate<CustomPlayerEntity>
             for (AnimationState<Player, CustomPlayerEntity> animationState : data[i]) {
                 if (animationState.getPredicate().test(player, event)) {
                     String name = animationState.getAnimationName();
+                    if (PlayerActionState.DEATH.animationName().equals(name) && DEATH_DIAGNOSED.add(player.getId())) {
+                        logDeathDiagnostic(event, player, name);
+                    }
                     ILoopType loopType = animationState.getLoopType();
                     PlayState slashBladePlayState = SlashBladeCompat.handleSlashBladeAnim(player, event, name, loopType);
                     if (slashBladePlayState != null) {
@@ -150,5 +161,22 @@ public class AnimationManager implements IAnimationPredicate<CustomPlayerEntity>
             }
         }
         return PlayState.STOP;
+    }
+
+    /**
+     * 每次死亡只打印一行：用于定位"死亡后模型不进死亡动画"这类问题
+     * （能看到死亡状态是否命中、模型有没有 death 动画、是否骑乘/已被移除）。
+     */
+    private static void logDeathDiagnostic(AnimationEvent<CustomPlayerEntity> event, Player player, String name) {
+        CustomPlayerEntity animatable = event.getAnimatable();
+        YesSteveModel.LOGGER.info("[SM-DEATH] {} local={} dead={} removed={} riding={} health={} hasDeathAnim={} anim={}",
+                player.getName().getString(),
+                animatable.isLocalPlayerModel(),
+                player.isDeadOrDying(),
+                player.isRemoved(),
+                player.getVehicle() != null,
+                player.getHealth(),
+                animatable.getAnimation(name) != null,
+                name);
     }
 }

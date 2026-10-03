@@ -209,7 +209,7 @@ public class ModelAssemblyFactory {
         boolean externalPlayerModel = !isPrimary;
         ModelSourceFormat sourceFormat = resolveSourceFormat(bbModelImport, isPrimary);
         SemanticSkeleton semanticSkeleton = buildSemanticSkeleton(mainModel);
-        boolean useBuiltinDefaultActionPreset = shouldUseBuiltinDefaultActionPreset(sourceFormat, externalPlayerModel);
+        boolean useBuiltinDefaultActionPreset = shouldUseBuiltinDefaultActionPreset(sourceFormat);
         boolean useBbmodelActionPreset = shouldUseBbmodelActionPreset(sourceFormat);
         if (useBuiltinDefaultActionPreset) {
             applyBuiltinDefaultActionPreset(object2ReferenceOpenHashMap, armAnimations);
@@ -267,8 +267,13 @@ public class ModelAssemblyFactory {
         return primary ? ModelSourceFormat.BUILTIN_SAMPLE : ModelSourceFormat.YSM_NATIVE;
     }
 
-    private static boolean shouldUseBuiltinDefaultActionPreset(ModelSourceFormat sourceFormat, boolean externalPlayerModel) {
-        return externalPlayerModel && sourceFormat == ModelSourceFormat.YSM_NATIVE;
+    /**
+     * 内置动作预设对「自己用的模型」(BUILTIN_SAMPLE) 与「其他玩家的模型」(YSM_NATIVE) 都注入：
+     * 预设走 computeIfAbsent 语义，只补齐模型缺失的状态（death 等），不会覆盖模型自带动画。
+     * 只给外部模型注入的旧行为会让自己的模型在缺 death 时死亡后没有任何动画。
+     */
+    private static boolean shouldUseBuiltinDefaultActionPreset(ModelSourceFormat sourceFormat) {
+        return sourceFormat == ModelSourceFormat.YSM_NATIVE || sourceFormat == ModelSourceFormat.BUILTIN_SAMPLE;
     }
 
     private static void applyBuiltinDefaultActionPreset(Object2ReferenceLinkedOpenHashMap<String, Animation> mainAnimations,
