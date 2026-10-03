@@ -23,9 +23,12 @@ public class ConditionTAC {
             return;
         }
         String str2 = strArrSplit[1];
-        if (ResourceLocation.isValidPath(str2)) {
+        // 枪械 id 是 "命名空间:路径"（如 tacz:ak47）：isValidPath 会把冒号判为非法，
+        // 导致 tac:xxx$<枪械> 动画永远注册不上。
+        ResourceLocation gunId = ResourceLocation.tryParse(str2);
+        if (gunId != null) {
             this.nameTest.add(name);
-            this.idTest.add(ResourceLocation.parse(str2));
+            this.idTest.add(gunId);
         }
     }
 

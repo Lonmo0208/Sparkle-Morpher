@@ -1,6 +1,7 @@
 package com.micaftic.morpher.client.animation.condition;
 
 import com.micaftic.morpher.util.EquipmentUtil;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ReferenceArrayList;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -33,7 +34,12 @@ public class ConditionSwing {
 
     private final ObjectOpenHashSet<ResourceLocation> idTest = new ObjectOpenHashSet<>();
 
+    /** 声明名（如 {@code swing$minecraft:mace}）——播放时必须用作者写下的原名字。 */
+    private final Object2ObjectOpenHashMap<ResourceLocation, String> idNames = new Object2ObjectOpenHashMap<>();
+
     private final ReferenceArrayList<TagKey<Item>> tagTest = new ReferenceArrayList<>();
+
+    private final Object2ObjectOpenHashMap<TagKey<Item>, String> tagNames = new Object2ObjectOpenHashMap<>();
 
     private final ObjectOpenHashSet<UseAnim> extraTes = new ObjectOpenHashSet<>();
 
@@ -58,11 +64,22 @@ public class ConditionSwing {
             return;
         }
         String strSubstring = name.substring(this.preSize);
-        if (name.startsWith(this.idPre) && ResourceLocation.isValidPath(strSubstring)) {
-            this.idTest.add(ResourceLocation.parse(strSubstring));
+        // 物品/标签按 "命名空间:路径" 声明：isValidPath 会把带冒号的声明判为非法，
+        // 导致"指定物品"的 swing 动画永远注册不上（详见 ConditionHold 同名注释）。
+        if (name.startsWith(this.idPre)) {
+            ResourceLocation id = ResourceLocation.tryParse(strSubstring);
+            if (id != null) {
+                this.idTest.add(id);
+                this.idNames.put(id, name);
+            }
         }
-        if (name.startsWith(this.tagPre) && ResourceLocation.isValidPath(strSubstring)) {
-            this.tagTest.add(TagKey.create(Registries.ITEM, ResourceLocation.parse(strSubstring)));
+        if (name.startsWith(this.tagPre)) {
+            ResourceLocation tag = ResourceLocation.tryParse(strSubstring);
+            if (tag != null) {
+                TagKey<Item> key = TagKey.create(Registries.ITEM, tag);
+                this.tagTest.add(key);
+                this.tagNames.put(key, name);
+            }
         }
         if (!name.startsWith(this.extraPre) || strSubstring.equals(UseAnim.NONE.name().toLowerCase(Locale.US))) {
             return;
@@ -94,7 +111,7 @@ public class ConditionSwing {
         }
         ResourceLocation key = BuiltInRegistries.ITEM.getKey(livingEntity.getItemInHand(interactionHand).getItem());
         if (key != null && this.idTest.contains(key)) {
-            return this.idPre + key;
+            return this.idNames.getOrDefault(key, this.idPre + key);
         }
         return EMPTY;
     }
@@ -106,7 +123,8 @@ public class ConditionSwing {
         ItemStack itemInHand = livingEntity.getItemInHand(interactionHand);
         Stream<TagKey<Item>> stream = this.tagTest.stream();
         Objects.requireNonNull(itemInHand);
-        return stream.filter(itemInHand::is).findFirst().map(tagKey -> this.tagPre + tagKey.location()).orElse(EMPTY);
+        return stream.filter(itemInHand::is).findFirst()
+                .map(tagKey -> this.tagNames.getOrDefault(tagKey, this.tagPre + tagKey.location())).orElse(EMPTY);
     }
 
     private String doExtraTest(LivingEntity entity, InteractionHand hand) {

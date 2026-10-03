@@ -2,7 +2,6 @@ package com.micaftic.morpher.client.animation.condition;
 
 import com.micaftic.morpher.core.compat.touhoulittlemaid.TouhouLittleMaidCompat;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
 
 public class ConditionChair {
@@ -23,7 +22,9 @@ public class ConditionChair {
             return;
         }
         String strSubstring = name.substring(preSize);
-        if (name.startsWith(this.idPre) && ResourceLocation.isValidPath(strSubstring)) {
+        // 椅子/坐骑 id 形如 chair$touhou_little_maid:moto（带命名空间）：
+        // isValidPath 会把冒号判为非法，导致这类动画永远注册不上。
+        if (name.startsWith(this.idPre) && !strSubstring.isBlank()) {
             this.idTest.add(strSubstring);
         }
     }

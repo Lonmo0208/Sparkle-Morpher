@@ -1,6 +1,7 @@
 package com.micaftic.morpher.client.animation.condition;
 
 import com.micaftic.morpher.util.EquipmentUtil;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ReferenceArrayList;
 import it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet;
@@ -38,7 +39,12 @@ public class ConditionHold {
 
     private final ObjectOpenHashSet<ResourceLocation> idTest = new ObjectOpenHashSet<>();
 
+    /** 声明名（如 {@code hold_offhand$minecraft:mace}）——播放时必须用作者写下的原名字。 */
+    private final Object2ObjectOpenHashMap<ResourceLocation, String> idNames = new Object2ObjectOpenHashMap<>();
+
     private final ReferenceArrayList<TagKey<Item>> tagTest = new ReferenceArrayList<>();
+
+    private final Object2ObjectOpenHashMap<TagKey<Item>, String> tagNames = new Object2ObjectOpenHashMap<>();
 
     private final ReferenceOpenHashSet<UseAnim> extraTes = new ReferenceOpenHashSet<>();
 
@@ -63,11 +69,23 @@ public class ConditionHold {
             return;
         }
         String strSubstring = name.substring(this.preSize);
-        if (name.startsWith(this.idPre) && ResourceLocation.isValidPath(strSubstring)) {
-            this.idTest.add(ResourceLocation.parse(strSubstring));
+        // 物品/标签按 "命名空间:路径" 声明（如 hold_offhand$minecraft:mace / hold_offhand#c:tools）。
+        // 这里不能用 isValidPath 校验：路径模式不含冒号，会把所有带命名空间的声明判为非法，
+        // 导致"指定物品"动画（内置模型 hold_offhand$immersive_melodies:trumpet 等）永远注册不上。
+        if (name.startsWith(this.idPre)) {
+            ResourceLocation id = ResourceLocation.tryParse(strSubstring);
+            if (id != null) {
+                this.idTest.add(id);
+                this.idNames.put(id, name);
+            }
         }
-        if (name.startsWith(this.tagPre) && ResourceLocation.isValidPath(strSubstring)) {
-            this.tagTest.add(TagKey.create(Registries.ITEM, ResourceLocation.parse(strSubstring)));
+        if (name.startsWith(this.tagPre)) {
+            ResourceLocation tag = ResourceLocation.tryParse(strSubstring);
+            if (tag != null) {
+                TagKey<Item> key = TagKey.create(Registries.ITEM, tag);
+                this.tagTest.add(key);
+                this.tagNames.put(key, name);
+            }
         }
         if (!name.startsWith(this.extraPre) || strSubstring.equals(UseAnim.NONE.name().toLowerCase(Locale.US))) {
             return;
@@ -99,7 +117,7 @@ public class ConditionHold {
         }
         ResourceLocation key = BuiltInRegistries.ITEM.getKey(livingEntity.getItemInHand(interactionHand).getItem());
         if (key != null && this.idTest.contains(key)) {
-            return this.idPre + key;
+            return this.idNames.getOrDefault(key, this.idPre + key);
         }
         return EMPTY;
     }
@@ -111,7 +129,8 @@ public class ConditionHold {
         ItemStack itemInHand = livingEntity.getItemInHand(interactionHand);
         Stream<TagKey<Item>> stream = this.tagTest.stream();
         Objects.requireNonNull(itemInHand);
-        return stream.filter(itemInHand::is).findFirst().map(tagKey -> this.tagPre + tagKey.location()).orElse("");
+        return stream.filter(itemInHand::is).findFirst()
+                .map(tagKey -> this.tagNames.getOrDefault(tagKey, this.tagPre + tagKey.location())).orElse("");
     }
 
     private String doExtraTest(LivingEntity entity, InteractionHand hand) {
